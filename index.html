@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#312b25" />
+    <meta name="description" content="一个可以和朋友一起待着的像素猫咪庭院。" />
+    <title>猫庭</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar" aria-label="庭院状态">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">✦</span>
+          <small>傍晚 6:20 · 晴</small>
+        </div>
+        <div class="connection" id="connection-status" data-state="connecting">
+          <i aria-hidden="true"></i><span>正在走进庭院…</span>
+        </div>
+      </header>
+
+      <section class="game-frame" aria-label="像素猫咪庭院">
+        <canvas id="game" width="960" height="640" tabindex="0" aria-label="使用方向键或 WASD 移动你的小猫"></canvas>
+        <div class="hint" id="hint">方向键 / WASD 移动 · 右键小猫换装</div>
+        <div class="mobile-pad" aria-label="移动控制">
+          <button data-key="ArrowUp" aria-label="向上">▲</button>
+          <button data-key="ArrowLeft" aria-label="向左">◀</button>
+          <button data-key="ArrowDown" aria-label="向下">▼</button>
+          <button data-key="ArrowRight" aria-label="向右">▶</button>
+        </div>
+      </section>
+
+      <nav class="activity-dock" aria-label="猫咪活动">
+        <button data-activity="sleep"><span>☾</span>睡觉</button>
+        <button data-activity="study"><span>▤</span>学习</button>
+        <button data-activity="eat"><span>♨</span>吃饭</button>
+        <button data-activity="play"><span>●</span>玩耍</button>
+        <button data-activity="toilet"><span>♧</span>上厕所</button>
+      </nav>
+
+      <aside class="chat" id="chat-panel" aria-label="庭院对话">
+        <div class="chat-heading">
+          <span>庭院悄悄话</span>
+          <button id="chat-toggle" aria-label="收起或展开聊天">—</button>
+        </div>
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <form id="chat-form" autocomplete="off">
+          <input id="chat-input" maxlength="160" placeholder="说点什么…" aria-label="聊天内容" />
+          <button type="submit" aria-label="发送">↵</button>
+        </form>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
