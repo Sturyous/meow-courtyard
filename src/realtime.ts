@@ -1,19 +1,36 @@
-import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
-import type { ChatMessage, PlayerSnapshot, RoomEvent } from './types';
+import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
+import { getSupabase, ROOM_ID } from './supabase';
+import type { ChatMessage, DuetKind, Emote, NoteData, PlayerSnapshot, PresenceMember, RoomEvent } from './types';
+
+function localTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return '';
+  }
+}
 
 interface RoomCallbacks {
   getLocalPlayer: () => PlayerSnapshot;
   onPlayer: (player: PlayerSnapshot, sequence?: number) => void;
   onPlayerLeave: (id: string) => void;
-  onPresenceSync: (ids: Set<string>) => void;
+  onPresenceSync: (members: PresenceMember[]) => void;
+  onPartnerTz: (tz: string) => void;
   onChat: (message: ChatMessage) => void;
   onStatus: (state: 'online' | 'offline' | 'connecting', label: string) => void;
+  onReady: () => void;
+  onNotePlaced: (note: NoteData) => void;
+  onNoteOpened: (noteId: string) => void;
+  onInteractInvite: (from: string, fromName: string, kind: DuetKind) => void;
+  onInteractAccept: (from: string, kind: DuetKind) => void;
+  onInteractDecline: (from: string, kind: DuetKind) => void;
+  onEmote: (playerId: string, emote: Emote) => void;
 }
 
-export class RealtimeRoom {
-  private client: SupabaseClient | null = null;
+export class RealtimeRoom {  private client: SupabaseClient | null = null;
   private channel: RealtimeChannel | null = null;
   private sequence = 0;
+  private joinedAt = '';
   private readonly playerId: string;
 
   constructor(playerId: string, private readonly callbacks: RoomCallbacks) {
@@ -21,17 +38,15 @@ export class RealtimeRoom {
   }
 
   async connect(): Promise<void> {
-    const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-    const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
-    const roomId = (import.meta.env.VITE_ROOM_ID as string | undefined) || 'mossbell-courtyard';
-    if (!url || !key) {
+    this.client = getSupabase();
+    if (!this.client) {
       this.callbacks.onStatus('offline', '单猫离线模式');
+      this.callbacks.onReady();
       return;
     }
 
     this.callbacks.onStatus('connecting', '正在走进庭院…');
-    this.client = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-    this.channel = this.client.channel(`courtyard:${roomId}`, {
+    this.channel = this.client.channel(`courtyard:${ROOM_ID}`, {
       config: { presence: { key: this.playerId }, broadcast: { self: false, ack: false } },
     });
 
@@ -42,7 +57,8 @@ export class RealtimeRoom {
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           this.callbacks.onStatus('online', '庭院已连接');
-          await this.channel?.track({ player: this.callbacks.getLocalPlayer(), joinedAt: new Date().toISOString() });
+          await this.channel?.track({ player: this.callbacks.getLocalPlayer(), joinedAt: new Date().toISOString(), tz: localTimeZone() });
+          this.callbacks.onReady();
           this.send({ type: 'snapshot-request', requesterId: this.playerId });
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           this.callbacks.onStatus('offline', '连接不稳，正在重试');
@@ -52,12 +68,31 @@ export class RealtimeRoom {
       });
   }
 
+  getJoinedAt(): string {
+    return this.joinedAt;
+  }
+
   sendMovement(player: PlayerSnapshot): void {
     this.send({ type: 'move', player, sequence: ++this.sequence });
   }
 
   sendActivity(player: PlayerSnapshot): void { this.send({ type: 'activity', player }); }
   sendAppearance(player: PlayerSnapshot): void { this.send({ type: 'appearance', player }); }
+  sendNotePlaced(note: NoteData): void { this.send({ type: 'note-placed', note }); }
+  sendNoteOpened(noteId: string): void { this.send({ type: 'note-opened', noteId }); }
+  sendEmote(emote: Emote): void { this.send({ type: 'emote', playerId: this.playerId, emote }); }
+
+  sendInteractInvite(to: string, fromName: string, kind: DuetKind): void {
+    this.send({ type: 'interact-invite', from: this.playerId, fromName, to, kind });
+  }
+
+  sendInteractAccept(to: string, kind: DuetKind): void {
+    this.send({ type: 'interact-accept', from: this.playerId, to, kind });
+  }
+
+  sendInteractDecline(to: string, kind: DuetKind): void {
+    this.send({ type: 'interact-decline', from: this.playerId, to, kind });
+  }
 
   sendChat(name: string, text: string): void {
     this.send({ type: 'chat', playerId: this.playerId, name, text: text.slice(0, 160), sentAt: Date.now() });
@@ -72,28 +107,56 @@ export class RealtimeRoom {
   private syncPresence(): void {
     if (!this.channel) return;
     const state = this.channel.presenceState<Record<string, unknown>>();
+    const members: PresenceMember[] = [];
     const activeIds = new Set<string>();
     for (const [key, entries] of Object.entries(state)) {
       if (key === this.playerId) continue;
-      const first = entries[0] as { player?: PlayerSnapshot } | undefined;
+      const first = entries[0] as { player?: PlayerSnapshot; joinedAt?: string; tz?: string } | undefined;
       if (!first?.player) continue;
       activeIds.add(first.player.id);
+      members.push({ id: first.player.id, joinedAt: first.joinedAt ?? '' });
+      if (typeof first.tz === 'string' && first.tz) this.callbacks.onPartnerTz(first.tz);
       this.callbacks.onPlayer(first.player);
     }
-    this.callbacks.onPresenceSync(activeIds);
+    this.callbacks.onPresenceSync(members);
     this.send({ type: 'snapshot-request', requesterId: this.playerId });
   }
 
   private receive(value: unknown): void {
     const event = value as Partial<RoomEvent>;
     if (!event || typeof event.type !== 'string') return;
+
     if (event.type === 'snapshot-request') {
       if (event.requesterId !== this.playerId) this.send({ type: 'snapshot-response', player: this.callbacks.getLocalPlayer() });
       return;
     }
     if (event.type === 'chat') {
       if (typeof event.playerId !== 'string' || event.playerId === this.playerId || typeof event.text !== 'string' || typeof event.name !== 'string') return;
-      this.callbacks.onChat({ id: crypto.randomUUID(), playerId: event.playerId, name: '喵喵', text: event.text.slice(0, 160), sentAt: Number(event.sentAt) || Date.now() });
+      this.callbacks.onChat({ id: crypto.randomUUID(), playerId: event.playerId, name: event.name, text: event.text.slice(0, 160), sentAt: Number(event.sentAt) || Date.now() });
+      return;
+    }
+    if (event.type === 'note-placed' && event.note && event.note.authorId !== this.playerId) {
+      this.callbacks.onNotePlaced(event.note);
+      return;
+    }
+    if (event.type === 'note-opened' && typeof event.noteId === 'string') {
+      this.callbacks.onNoteOpened(event.noteId);
+      return;
+    }
+    if (event.type === 'interact-invite' && event.to === this.playerId && typeof event.from === 'string') {
+      this.callbacks.onInteractInvite(event.from, String(event.fromName ?? '喵喵'), event.kind as DuetKind);
+      return;
+    }
+    if (event.type === 'interact-accept' && event.to === this.playerId && typeof event.from === 'string') {
+      this.callbacks.onInteractAccept(event.from, event.kind as DuetKind);
+      return;
+    }
+    if (event.type === 'interact-decline' && event.to === this.playerId && typeof event.from === 'string') {
+      this.callbacks.onInteractDecline(event.from, event.kind as DuetKind);
+      return;
+    }
+    if (event.type === 'emote' && typeof event.playerId === 'string' && event.playerId !== this.playerId && event.emote) {
+      this.callbacks.onEmote(event.playerId, event.emote as Emote);
       return;
     }
     if ('player' in event && event.player && event.player.id !== this.playerId) {

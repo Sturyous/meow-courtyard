@@ -12,7 +12,8 @@
       <header class="topbar" aria-label="庭院状态">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">✦</span>
-          <small>傍晚 6:20 · 晴</small>
+          <small id="clock">傍晚 6:20 · 晴</small>
+          <button id="time-mode" class="time-mode" type="button">🌗 跟随本地</button>
         </div>
         <div class="connection" id="connection-status" data-state="connecting">
           <i aria-hidden="true"></i><span>正在走进庭院…</span>
@@ -21,7 +22,7 @@
 
       <section class="game-frame" aria-label="像素猫咪庭院">
         <canvas id="game" width="960" height="640" tabindex="0" aria-label="使用方向键或 WASD 移动你的小猫"></canvas>
-        <div class="hint" id="hint">方向键 / WASD 移动 · 右键小猫换装</div>
+        <div class="hint" id="hint">方向键 / WASD 移动 · 右键小猫互动 · 1-6 表情</div>
         <div class="mobile-pad" aria-label="移动控制">
           <button data-key="ArrowUp" aria-label="向上">▲</button>
           <button data-key="ArrowLeft" aria-label="向左">◀</button>
@@ -30,13 +31,30 @@
         </div>
       </section>
 
+      <div class="recap" id="recap" role="status"></div>
+
       <nav class="activity-dock" aria-label="猫咪活动">
         <button data-activity="sleep"><span>☾</span>睡觉</button>
         <button data-activity="study"><span>▤</span>学习</button>
         <button data-activity="eat"><span>♨</span>吃饭</button>
         <button data-activity="play"><span>●</span>玩耍</button>
         <button data-activity="toilet"><span>♧</span>上厕所</button>
+        <button id="scene-toggle"><span>⌂</span>进屋</button>
+        <button id="note-button" class="dock-note"><span>✎</span>留纸条</button>
       </nav>
+
+      <div class="context-menu" id="context-menu" role="menu">
+        <button id="menu-nuzzle" role="menuitem">蹭蹭 TA</button>
+        <button id="menu-cosleep" role="menuitem">一起睡</button>
+        <button id="menu-reroll" role="menuitem">换身毛</button>
+        <button id="menu-bed" role="menuitem">去窝里睡</button>
+      </div>
+
+      <div class="invite-bar" id="invite-bar" role="alert">
+        <span id="invite-text"></span>
+        <button id="invite-accept">好呀</button>
+        <button id="invite-decline">不了</button>
+      </div>
 
       <aside class="chat" id="chat-panel" aria-label="庭院对话">
         <div class="chat-heading">
@@ -49,6 +67,50 @@
           <button type="submit" aria-label="发送">↵</button>
         </form>
       </aside>
+
+      <div class="overlay" id="note-composer" role="dialog" aria-label="留纸条">
+        <div class="panel">
+          <h2>留点什么给 TA</h2>
+          <textarea id="note-text" maxlength="200" rows="4" placeholder="写一张纸条（200 字以内）…"></textarea>
+          <div class="panel-actions">
+            <button id="note-place-note">放纸条</button>
+            <button id="note-place-treat">放小鱼干</button>
+            <button id="note-cancel" class="ghost-button">算了</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay" id="note-card" role="dialog" aria-label="纸条">
+        <div class="panel paper-panel">
+          <div class="note-card-text" id="note-card-text"></div>
+          <div class="note-card-author" id="note-card-author"></div>
+          <div class="panel-actions">
+            <button id="note-card-close">收好了</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay" id="identity-panel" role="dialog" aria-label="认领你的猫">
+        <div class="panel">
+          <h2>认领你的猫</h2>
+          <canvas id="identity-preview" width="96" height="96" aria-hidden="true"></canvas>
+          <span class="identity-label" id="identity-label"></span>
+          <div class="panel-actions">
+            <button id="identity-reroll" class="ghost-button">换一只</button>
+          </div>
+          <input id="identity-name" maxlength="12" placeholder="给 TA 起个名字" aria-label="猫的名字" />
+          <div class="panel-actions">
+            <button id="identity-confirm">走进庭院</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay" id="gate" role="alert">
+        <div class="panel">
+          <h2>这扇门你打不开</h2>
+          <p class="gate-text">庭院只对知道口令的猫开放。</p>
+        </div>
+      </div>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

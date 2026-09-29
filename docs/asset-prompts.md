@@ -33,6 +33,25 @@ Constraints: genuinely transparent background; no grid lines; no labels; no text
 
 参考图：`StardewValley-Assets/Animals/cat..png`
 
+## cabin-bg.png
+
+以 courtyard-bg.png 为风格参考图（input_fidelity: low）生成，1536×1024，随后用脚本抹除右下角水印。
+
+```text
+Asset type: finished 3:2 top-down game interior background for a browser-based multiplayer cat game, the cozy cabin belonging to the same courtyard as the input image.
+Input images: Image 1 is the strict reference for pixel scale, material vocabulary, edge treatment, palette richness, wood tones, and cozy farm-game visual density. Match its handmade 16-bit pixel-art fidelity exactly, but create an INTERIOR scene.
+Primary request: Create a polished top-down pixel-art cabin interior at the same visual fidelity as the reference. A single warm wooden room where two cats can hang out together, feeling like the inside of a Stardew-Valley-style farmhouse, not flat vector art.
+Scene contents: warm honey-brown wooden plank floor covering the whole room; wooden walls only along the top edge; a stone fireplace with a small burning fire on the LEFT side of the top wall; a tall bookshelf packed with colorful books on the RIGHT side of the top wall; a large window centered on the top wall showing plain dark evening sky (keep the sky area simple and flat); a big round woven rug in warm red and cream in the center; an extra-wide cushioned cat bed big enough for two cats in the lower-right area, dusty pink with a folded blanket; a soft armchair with a tiny side table and an open book on the left-center; a small door mat at the bottom-center edge marking the exit; a few potted plants, a curled ball of yarn, subtle warm lighting.
+Composition/framing: exact 3:2 landscape, game-ready full-bleed background, no border, no UI. Keep the center and lower half largely open and walkable; all furniture pushed against the top wall or into corners. Important props clearly separated and not cropped.
+Style/medium: authentic crisp 16-bit pixel art, top-down 3/4 RPG view, hard pixel edges, coherent tile grid, dense crafted texture, strong readable silhouettes.
+Lighting/mood: warm firelight evening mood, cozy and intimate, gentle orange glow from the fireplace, rest of the room softly lit.
+Color palette: warm honey wood, cream, dusty pink and brick red accents, stone gray fireplace, deep warm browns.
+Constraints: no cats, no people, no text, no labels, no interface, no watermark. No blurry painterly texture, no smooth vector shapes, no isometric perspective, no photorealism. Preserve open navigable floor space in the center and lower half.
+```
+
+参考图：`public/assets/courtyard-bg.png`（本项目庭院图，作风格/材质参考）
+原始生成文件：`docs/asset-src/`（未去水印的原图，cabin-bg.png 为处理后版本）
+
 ## cat-squat-v1.png
 
 ```text
