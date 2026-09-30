@@ -4,6 +4,7 @@ import { RealtimeRoom } from './realtime';
 import { clockLabel, setTimeMode, type TimeMode } from './daynight';
 import { ensureIdentity, roomSecretOk, saveIdentity } from './identity';
 import {
+  deletePlayer,
   fetchGhosts,
   fetchOpenNotes,
   fetchRecap,
@@ -87,6 +88,7 @@ async function bootstrap(): Promise<void> {
     },
     onRemoteMenu: (playerId, clientX, clientY) => openRemoteMenu(playerId, clientX, clientY),
     onSelfMenu: (clientX, clientY) => openSelfMenu(clientX, clientY),
+    onGhostMenu: (playerId, clientX, clientY) => openGhostMenu(playerId, clientX, clientY),
     onNoteOpen: (note) => openNoteCard(note),
     onSceneChange: (scene) => {
       renderSceneButton(scene);
@@ -132,7 +134,7 @@ async function bootstrap(): Promise<void> {
     onReady: () => { void afterJoin(); },
     onNotePlaced: (note) => {
       game.addNote(note);
-      toast('TA 在院子里留了点东西');
+      toast(note.scene === 'cabin' ? 'TA 在屋里留了点东西' : 'TA 在院子里留了点东西');
     },
     onNoteOpened: (noteId) => {
       game.removeNote(noteId);
@@ -212,15 +214,11 @@ async function bootstrap(): Promise<void> {
   requiredElement<HTMLButtonElement>('#note-cancel').addEventListener('click', () => composer.classList.remove('open'));
 
   const beginPlacement = (kind: NoteKind) => {
-    if (game.getScene() !== 'yard') {
-      toast('纸条要留在院子里');
-      return;
-    }
     const text = kind === 'treat' ? '给你留了小鱼干' : noteText.value.trim().slice(0, 200);
     if (!text) return;
     pendingNote = { kind, text };
     composer.classList.remove('open');
-    setHint('点击庭院放下 · 右键取消');
+    setHint(game.getScene() === 'cabin' ? '点击屋里地面放下 · 右键取消' : '点击庭院放下 · 右键取消');
     game.setNotePlacement((x, y) => {
       setHint(HINT_DEFAULT);
       if (!pendingNote) return;
@@ -238,7 +236,8 @@ async function bootstrap(): Promise<void> {
   });
 
   async function placeNote(draft: { kind: NoteKind; text: string }, x: number, y: number): Promise<void> {
-    const saved = await insertNote(identity, draft.kind, draft.text, x, y);
+    const scene = game.getScene();
+    const saved = await insertNote(identity, draft.kind, draft.text, x, y, scene);
     const note: NoteData = saved ?? {
       id: crypto.randomUUID(),
       authorId: identity.id,
@@ -247,6 +246,7 @@ async function bootstrap(): Promise<void> {
       text: draft.text,
       x,
       y,
+      scene,
       createdAt: new Date().toISOString(),
       openedAt: null,
     };
@@ -270,16 +270,20 @@ async function bootstrap(): Promise<void> {
   }
   requiredElement<HTMLButtonElement>('#note-card-close').addEventListener('click', () => noteCard.classList.remove('open'));
 
-  // ---- 双人互动 ----
+  // ---- 双人互动 / 右键菜单 ----
   const menu = requiredElement<HTMLDivElement>('#context-menu');
   let menuTarget: string | null = null;
 
+  const MENU_BUTTONS = ['#menu-nuzzle', '#menu-cosleep', '#menu-reroll', '#menu-bed', '#menu-poke', '#menu-dismiss'];
+  const showMenuButtons = (visible: string[]) => {
+    for (const selector of MENU_BUTTONS) {
+      requiredElement<HTMLButtonElement>(selector).style.display = visible.includes(selector) ? '' : 'none';
+    }
+  };
+
   function openRemoteMenu(playerId: string, clientX: number, clientY: number): void {
     menuTarget = playerId;
-    requiredElement<HTMLButtonElement>('#menu-cosleep').style.display = game.getRemoteActivity(playerId) === 'sleep' ? '' : 'none';
-    requiredElement<HTMLButtonElement>('#menu-nuzzle').style.display = '';
-    requiredElement<HTMLButtonElement>('#menu-reroll').style.display = 'none';
-    requiredElement<HTMLButtonElement>('#menu-bed').style.display = 'none';
+    showMenuButtons(game.getRemoteActivity(playerId) === 'sleep' ? ['#menu-nuzzle', '#menu-cosleep'] : ['#menu-nuzzle']);
     menu.style.left = `${clientX}px`;
     menu.style.top = `${clientY}px`;
     menu.classList.add('open');
@@ -287,10 +291,16 @@ async function bootstrap(): Promise<void> {
 
   function openSelfMenu(clientX: number, clientY: number): void {
     menuTarget = null;
-    requiredElement<HTMLButtonElement>('#menu-nuzzle').style.display = 'none';
-    requiredElement<HTMLButtonElement>('#menu-cosleep').style.display = 'none';
-    requiredElement<HTMLButtonElement>('#menu-reroll').style.display = '';
-    requiredElement<HTMLButtonElement>('#menu-bed').style.display = '';
+    showMenuButtons(['#menu-reroll', '#menu-bed']);
+    menu.style.left = `${clientX}px`;
+    menu.style.top = `${clientY}px`;
+    menu.classList.add('open');
+  }
+
+  // 影子猫（TA 不在线 / 旧设备残留的猫）：戳一下互动，或把旧猫送走
+  function openGhostMenu(playerId: string, clientX: number, clientY: number): void {
+    menuTarget = playerId;
+    showMenuButtons(['#menu-poke', '#menu-dismiss']);
     menu.style.left = `${clientX}px`;
     menu.style.top = `${clientY}px`;
     menu.classList.add('open');
@@ -317,6 +327,18 @@ async function bootstrap(): Promise<void> {
   requiredElement<HTMLButtonElement>('#menu-cosleep').addEventListener('click', () => invite('cosleep'));
   requiredElement<HTMLButtonElement>('#menu-reroll').addEventListener('click', () => { closeMenu(); game.rerollAppearance(); });
   requiredElement<HTMLButtonElement>('#menu-bed').addEventListener('click', () => { closeMenu(); game.sleepInBed(); canvas.focus(); });
+  requiredElement<HTMLButtonElement>('#menu-poke').addEventListener('click', () => {
+    if (menuTarget) game.pokeGhost(menuTarget);
+    closeMenu();
+  });
+  requiredElement<HTMLButtonElement>('#menu-dismiss').addEventListener('click', () => {
+    if (menuTarget) {
+      game.forgetGhost(menuTarget);
+      void deletePlayer(menuTarget);
+      toast('送走了这只猫，它的东西还留在原地');
+    }
+    closeMenu();
+  });
 
   function clearPendingInvite(): void {
     if (pendingInvite) window.clearTimeout(pendingInvite.timer);

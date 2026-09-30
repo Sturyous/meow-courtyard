@@ -48,6 +48,8 @@
         <button id="menu-cosleep" role="menuitem">一起睡</button>
         <button id="menu-reroll" role="menuitem">换身毛</button>
         <button id="menu-bed" role="menuitem">去窝里睡</button>
+        <button id="menu-poke" role="menuitem">戳一下</button>
+        <button id="menu-dismiss" role="menuitem">送走这只猫</button>
       </div>
 
       <div class="invite-bar" id="invite-bar" role="alert">
@@ -93,6 +95,7 @@
       <div class="overlay" id="identity-panel" role="dialog" aria-label="认领你的猫">
         <div class="panel">
           <h2>认领你的猫</h2>
+          <div class="identity-existing" id="identity-existing"></div>
           <canvas id="identity-preview" width="96" height="96" aria-hidden="true"></canvas>
           <span class="identity-label" id="identity-label"></span>
           <div class="panel-actions">

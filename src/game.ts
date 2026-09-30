@@ -79,6 +79,7 @@ interface GameCallbacks {
   onAppearance: (snapshot: PlayerSnapshot) => void;
   onRemoteMenu: (playerId: string, clientX: number, clientY: number) => void;
   onSelfMenu: (clientX: number, clientY: number) => void;
+  onGhostMenu: (playerId: string, clientX: number, clientY: number) => void;
   onNoteOpen: (note: NoteData) => void;
   onSceneChange: (scene: SceneId) => void;
 }
@@ -99,6 +100,7 @@ interface RemotePlayer {
   scene: SceneId;
   buffer: PositionSample[];
   lastSequence: number;
+  lastAppliedAt: number;
   x: number;
   y: number;
 }
@@ -187,7 +189,11 @@ export class CourtyardGame {
     const scene: SceneId = snapshot.scene ?? 'yard';
     const existing = this.remotes.get(snapshot.id);
     if (existing) {
-      if (sequence > 0 && sequence <= existing.lastSequence) return;
+      // 同一只猫多台设备同时在线时，各设备的序列号各自计数会互相挡住，
+      // 用快照自带的 updatedAt（发送端时钟）做"最新者胜"仲裁
+      const staleBySequence = sequence > 0 && sequence <= existing.lastSequence;
+      const staleByClock = snapshot.updatedAt > 0 && snapshot.updatedAt <= existing.lastAppliedAt;
+      if (staleBySequence && staleByClock) return;
       existing.buffer.push({ x: snapshot.x, y: snapshot.y, at: now });
       if (existing.buffer.length > BUFFER_LIMIT) existing.buffer.shift();
       existing.name = snapshot.name;
@@ -197,6 +203,7 @@ export class CourtyardGame {
       existing.cosleepWith = snapshot.cosleepWith ?? null;
       existing.scene = scene;
       existing.lastSequence = Math.max(existing.lastSequence, sequence);
+      existing.lastAppliedAt = Math.max(existing.lastAppliedAt, snapshot.updatedAt);
       return;
     }
     this.remotes.set(snapshot.id, {
@@ -209,6 +216,7 @@ export class CourtyardGame {
       scene,
       buffer: [{ x: snapshot.x, y: snapshot.y, at: now }],
       lastSequence: sequence,
+      lastAppliedAt: snapshot.updatedAt,
       x: snapshot.x,
       y: snapshot.y,
     });
@@ -216,6 +224,16 @@ export class CourtyardGame {
 
   getRemoteActivity(id: string): Activity | null {
     return this.remotes.get(id)?.activity ?? null;
+  }
+
+  pokeGhost(id: string): void {
+    const ghost = this.ghosts.get(id);
+    if (ghost) ghost.pokeUntil = performance.now() + 1600;
+  }
+
+  // 送走旧设备残留的猫：从场上移除影子（登记行的删除由调用方负责）
+  forgetGhost(id: string): void {
+    this.ghosts.delete(id);
   }
 
   removeRemote(id: string): void {
@@ -432,7 +450,8 @@ export class CourtyardGame {
       const point = this.canvasPoint(event.clientX, event.clientY);
       const handler = this.notePlacement;
       this.notePlacement = null;
-      handler(clamp(point.x, YARD.left + 10, YARD.right - 10), clamp(point.y, YARD.top + 10, YARD.bottom - 10));
+      const bounds = this.scene === 'yard' ? YARD : CABIN;
+      handler(clamp(point.x, bounds.left + 10, bounds.right - 10), clamp(point.y, bounds.top + 10, bounds.bottom - 10));
     });
 
     this.canvas.addEventListener('contextmenu', (event) => {
@@ -444,6 +463,7 @@ export class CourtyardGame {
       const point = this.canvasPoint(event.clientX, event.clientY);
 
       for (const note of this.groundNotes.values()) {
+        if (note.scene !== this.scene) continue;
         if (Math.hypot(point.x - note.x, point.y - note.y) < 20) {
           this.callbacks.onNoteOpen(note);
           return;
@@ -459,7 +479,7 @@ export class CourtyardGame {
       for (const ghost of this.ghosts.values()) {
         if (ghost.scene !== this.scene) continue;
         if (Math.hypot(point.x - ghost.x, point.y - ghost.y) < 34) {
-          ghost.pokeUntil = performance.now() + 1600;
+          this.callbacks.onGhostMenu(ghost.id, event.clientX, event.clientY);
           return;
         }
       }
@@ -640,24 +660,30 @@ export class CourtyardGame {
     }
   }
 
-  // 环境小动作：所有在场猫（含远端与影子）按活动自发冒粒子，不走网络，各端本地生成。
+  // 环境小动作：当前场景里的猫（含远端与影子）按活动自发冒粒子，不走网络，各端本地生成。
   private spawnAmbient(now: number): void {
     const cats: { id: string; x: number; y: number; activity: Activity }[] = [
       this.local,
-      ...this.remotes.values(),
-      ...this.ghosts.values(),
+      ...[...this.remotes.values()].filter((cat) => cat.scene === this.scene),
+      ...[...this.ghosts.values()].filter((cat) => cat.scene === this.scene),
     ];
     for (const cat of cats) {
-      const interval = cat.activity === 'sleep' ? 1500 : cat.activity === 'eat' ? 650 : cat.activity === 'toilet' ? 800 : 0;
+      const interval = cat.activity === 'sleep' ? 1500 : cat.activity === 'eat' ? 480 : cat.activity === 'toilet' ? 560 : 0;
       if (!interval) continue;
       if (now - (this.ambientAt.get(cat.id) ?? 0) < interval) continue;
       this.ambientAt.set(cat.id, now);
       if (cat.activity === 'sleep') {
         this.particles.push({ kind: 'zzz', x: cat.x + 16, y: cat.y - 38, at: now });
       } else if (cat.activity === 'eat') {
-        this.particles.push({ kind: 'crumb', x: cat.x + randomInt(-7, 7), y: cat.y + 2, at: now });
+        // 吃饭时一次掉一小撮饭粒，2px 的单粒在画面上根本看不见
+        for (let i = 0; i < 3; i++) {
+          this.particles.push({ kind: 'crumb', x: cat.x + randomInt(-9, 9), y: cat.y + randomInt(0, 6), at: now });
+        }
       } else {
-        this.particles.push({ kind: 'sand', x: cat.x + randomInt(-20, -10), y: cat.y + 10, at: now });
+        // 刨猫砂：向后上方踢起一蓬沙子
+        for (let i = 0; i < 4; i++) {
+          this.particles.push({ kind: 'sand', x: cat.x + randomInt(-24, -8), y: cat.y + randomInt(4, 12), at: now });
+        }
       }
     }
   }
@@ -674,10 +700,10 @@ export class CourtyardGame {
     ctx.clearRect(0, 0, WORLD.width, WORLD.height);
     if (this.scene === 'yard') {
       drawCourtyard(ctx, this.frame);
-      this.drawNotes(ctx);
     } else {
       drawCabin(ctx, this.frame);
     }
+    this.drawNotes(ctx);
 
     const cast: { entity: OverheadEntity & PlayerSnapshotLike; label: string; ghost: boolean; poke: boolean }[] = [];
     for (const remote of this.remotes.values()) {
@@ -730,11 +756,10 @@ export class CourtyardGame {
     }
   }
 
-  // 小屋同眠专用：两只猫身上盖一床被子（1 张代码绘制的被子，覆盖任意花色组合）
+  // 同眠被窝：两只猫身上盖一床被子（1 张代码绘制的被子，覆盖任意花色组合），院子猫窝与小屋软垫通用
   private drawBlankets(ctx: CanvasRenderingContext2D): void {
-    if (this.scene !== 'cabin') return;
     for (const remote of this.remotes.values()) {
-      if (remote.scene !== 'cabin') continue;
+      if (remote.scene !== this.scene) continue;
       const paired = this.local.cosleepWith === remote.id
         && remote.cosleepWith === this.local.id
         && this.local.activity === 'sleep'
@@ -743,13 +768,21 @@ export class CourtyardGame {
     }
   }
 
-  // 异场景指示牌：TA 在另一个场景时，在门口立一块小木牌
+  // 异场景指示牌：TA 在另一个场景、或 TA 在另一个场景留了东西时，在门口立小木牌
   private drawSceneSign(ctx: CanvasRenderingContext2D): void {
+    const away = this.scene === 'yard' ? '屋里' : '院子里';
+    const texts: string[] = [];
     for (const remote of this.remotes.values()) {
-      if (remote.scene === this.scene) continue;
-      const text = this.scene === 'yard' ? `${remote.name} 在屋里` : `${remote.name} 在院子里`;
+      if (remote.scene !== this.scene) texts.push(`${remote.name} 在${away}`);
+    }
+    const notesElsewhere = [...this.groundNotes.values()]
+      .filter((note) => note.scene !== this.scene && note.authorId !== this.local.id).length;
+    if (notesElsewhere > 0) texts.push(`${away}有 ${notesElsewhere} 个 TA 留的东西`);
+
+    texts.forEach((text, index) => {
       const x = 480;
-      const y = this.scene === 'yard' ? 108 : 520;
+      const baseY = this.scene === 'yard' ? 108 : 520;
+      const y = baseY + index * 30;
       const bob = Math.round(Math.sin(this.frame / 500) * 1.5);
       ctx.save();
       ctx.font = '12px monospace';
@@ -764,16 +797,37 @@ export class CourtyardGame {
       ctx.fillStyle = '#5a4632';
       ctx.fillText(text, x, y + 4 + bob);
       ctx.restore();
-    }
+    });
   }
 
   private drawNotes(ctx: CanvasRenderingContext2D): void {
     const now = this.frame;
     for (const note of this.groundNotes.values()) {
+      if (note.scene !== this.scene) continue;
       const x = Math.round(note.x);
       const y = Math.round(note.y);
       ctx.fillStyle = 'rgba(40, 37, 30, .2)';
       ctx.fillRect(x - 7, y + 4, 14, 3);
+
+      // 高亮提示：TA 留的东西带呼吸光环 + 上下浮动的感叹号，避免"留了找不到"
+      const mine = note.authorId === this.local.id;
+      if (!mine) {
+        const pulse = (Math.sin(now / 420 + x) + 1) / 2;
+        ctx.save();
+        ctx.globalAlpha = 0.28 + pulse * 0.3;
+        ctx.strokeStyle = '#f1c56f';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(x, y + 5, 14 + pulse * 4, 6 + pulse * 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 0.12 + pulse * 0.14;
+        ctx.fillStyle = '#f1c56f';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 5, 14 + pulse * 4, 6 + pulse * 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
       if (note.kind === 'treat') {
         ctx.fillStyle = '#e8a04c';
         ctx.fillRect(x - 6, y - 2, 9, 5);
@@ -789,11 +843,13 @@ export class CourtyardGame {
         ctx.fillRect(x - 4, y - 1, 8, 1);
         ctx.fillRect(x - 4, y + 2, 6, 1);
       }
-      if (note.authorId !== this.local.id) {
+      if (!mine) {
         const bounce = Math.round(Math.sin(now / 260 + x) * 2);
-        ctx.font = 'bold 13px monospace';
+        ctx.font = 'bold 14px monospace';
         ctx.textAlign = 'center';
-        ctx.fillStyle = '#f1c56f';
+        ctx.fillStyle = '#543927';
+        ctx.fillText('!', x + 1, y - 11 + bounce);
+        ctx.fillStyle = '#ffd97a';
         ctx.fillText('!', x, y - 12 + bounce);
       }
     }
@@ -841,11 +897,13 @@ export class CourtyardGame {
         ctx.fillStyle = '#9db4d0';
         ctx.fillText('z', Math.round(particle.x + progress * 8), Math.round(particle.y - progress * 26));
       } else if (particle.kind === 'crumb') {
-        ctx.fillStyle = '#e8c27b';
-        ctx.fillRect(Math.round(particle.x), Math.round(particle.y + progress * 9), 2, 2);
+        ctx.fillStyle = '#f2cf8a';
+        ctx.fillRect(Math.round(particle.x), Math.round(particle.y + progress * 10), 3, 3);
+        ctx.fillStyle = '#d9a95e';
+        ctx.fillRect(Math.round(particle.x) + 1, Math.round(particle.y + progress * 10) + 2, 1, 1);
       } else {
-        ctx.fillStyle = '#d7c295';
-        ctx.fillRect(Math.round(particle.x - progress * 10), Math.round(particle.y - Math.sin(progress * Math.PI) * 8), 2, 2);
+        ctx.fillStyle = '#e8d5a6';
+        ctx.fillRect(Math.round(particle.x - progress * 14), Math.round(particle.y - Math.sin(progress * Math.PI) * 12), 3, 3);
       }
       ctx.restore();
     }
@@ -1129,9 +1187,13 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
     ? Math.round(Math.sin(time / 95 + x) * 2)
     : activity === 'play'
       ? Math.round(Math.sin(time / 120) * 2)
-      : activity === 'sleep'
-        ? Math.round(Math.sin(time / 900 + x) * 1.5)
-        : Math.round(Math.sin(time / 650 + x));
+      : activity === 'eat'
+        ? Math.round(Math.max(0, Math.sin(time / 170 + x)) * 2.5)
+        : activity === 'toilet'
+          ? Math.round(Math.sin(time / 240 + x) * 1.2)
+          : activity === 'sleep'
+            ? Math.round(Math.sin(time / 900 + x) * 1.5)
+            : Math.round(Math.sin(time / 650 + x));
   const px = Math.round(x + cosleepOffset(player)); const py = Math.round(y + bob);
 
   ctx.fillStyle = 'rgba(40, 37, 30, .24)'; ctx.fillRect(px - 17, Math.round(y) + 13, 34, 7);
@@ -1191,7 +1253,7 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
 function drawAtlasCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, label: string, own: boolean): void {
   const { x, y, activity, direction, appearance } = player;
   if (activity === 'toilet' && catSquat.complete && catSquat.naturalWidth > 0) {
-    drawSquattingCat(ctx, player, label, own);
+    drawSquattingCat(ctx, player, time, label, own);
     return;
   }
   const moving = activity === 'walk';
@@ -1218,7 +1280,9 @@ function drawAtlasCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike,
     ? 0
     : activity === 'sleep'
       ? Math.round(Math.sin(time / 900 + x) * 1.5)
-      : Math.round(Math.sin(time / 650 + x));
+      : activity === 'eat'
+        ? Math.round(Math.max(0, Math.sin(time / 170 + x)) * 3)
+        : Math.round(Math.sin(time / 650 + x));
 
   ctx.save();
   ctx.imageSmoothingEnabled = false;
@@ -1260,10 +1324,12 @@ function drawAtlasCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike,
   drawLabel(ctx, x, Math.round(y - height * anchor - 9), label, own);
 }
 
-function drawSquattingCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, label: string, own: boolean): void {
+function drawSquattingCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, label: string, own: boolean): void {
   const proportions = breedProportions(player.appearance.breed);
   const width = 72 * proportions.width;
   const height = 64 * proportions.height;
+  // 刨砂节奏：身体小幅向后顿挫，配合脚边踢起的沙粒
+  const scratch = Math.max(0, Math.sin(time / 150 + player.x)) * 2;
   ctx.save();
   ctx.imageSmoothingEnabled = false;
   ctx.filter = coatFilter(player.appearance.coat);
@@ -1273,7 +1339,7 @@ function drawSquattingCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotL
     395,
     710,
     610,
-    Math.round(player.x - width / 2),
+    Math.round(player.x - width / 2 - scratch),
     Math.round(player.y - height),
     width,
     height,
@@ -1420,7 +1486,7 @@ function hashString(value: string): number {
   return Math.abs(result);
 }
 function particleLife(kind: ParticleKind): number {
-  return kind === 'heart' ? HEART_LIFE : kind === 'zzz' ? 1800 : kind === 'crumb' ? 700 : 800;
+  return kind === 'heart' ? HEART_LIFE : kind === 'zzz' ? 1800 : kind === 'crumb' ? 900 : 1000;
 }
 
 function loadImage(source: string): HTMLImageElement {

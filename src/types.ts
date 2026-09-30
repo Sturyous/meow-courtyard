@@ -39,6 +39,7 @@ export interface NoteData {
   text: string;
   x: number;
   y: number;
+  scene: SceneId;
   createdAt: string;
   openedAt: string | null;
 }

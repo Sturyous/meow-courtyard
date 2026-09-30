@@ -230,6 +230,31 @@ button { -webkit-tap-highlight-color: transparent; }
 .identity-label { font-size: 12px; color: #875236; }
 .gate-text { margin: 0; font-size: 12px; color: #875236; }
 
+.identity-existing { display: grid; gap: 6px; width: 100%; }
+.identity-existing:empty { display: none; }
+.identity-existing-title { margin: 0; font-size: 11px; color: #875236; text-align: center; line-height: 1.5; }
+.identity-existing-row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: #f7efdc;
+  border: 2px solid #c9b28a;
+  font-size: 11px;
+  color: #5a4632;
+}
+.identity-existing-row i { width: 12px; height: 12px; border: 2px solid #543927; }
+.identity-existing-row button {
+  padding: 3px 8px;
+  font: inherit;
+  color: #fdf6e3;
+  background: #b3543a;
+  border: 2px solid #7a3d2a;
+  cursor: pointer;
+}
+.identity-existing-row button:hover { background: #c96a4c; }
+
 .paper-panel { width: min(320px, calc(100vw - 48px)); }
 .note-card-text { font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
 .note-card-author { font-size: 11px; color: #875236; }

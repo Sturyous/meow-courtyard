@@ -19,9 +19,13 @@ create table if not exists notes (
   text        text not null check (char_length(text) <= 200),
   anchor_x    int not null,
   anchor_y    int not null,
+  scene       text not null default 'yard',
   created_at  timestamptz not null default now(),
   opened_at   timestamptz
 );
+
+-- 已建过表的部署：补场景列（纸条/小鱼干支持留在小屋里），幂等可重复执行
+alter table notes add column if not exists scene text not null default 'yard';
 
 create table if not exists presence_log (
   id        bigint generated always as identity primary key,

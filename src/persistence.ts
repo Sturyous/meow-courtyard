@@ -1,5 +1,5 @@
 import { getSupabase, supabaseConfig, ROOM_ID } from './supabase';
-import type { Identity, NoteData, NoteKind, PlayerSnapshot } from './types';
+import type { Appearance, Identity, NoteData, NoteKind, PlayerSnapshot, SceneId } from './types';
 
 export interface GhostData {
   id: string;
@@ -54,6 +54,37 @@ export async function fetchGhosts(myId: string): Promise<GhostData[]> {
     }));
 }
 
+// 多设备场景：列出本房间所有已登记的猫，供新设备"认领已有的猫"
+export interface PlayerRecord {
+  id: string;
+  name: string;
+  appearance: Appearance;
+  lastSeen: string;
+}
+
+export async function fetchPlayers(): Promise<PlayerRecord[]> {
+  const db = getSupabase();
+  if (!db) return [];
+  const { data } = await db
+    .from('players')
+    .select('id, name, appearance, last_seen')
+    .eq('room', ROOM_ID)
+    .order('last_seen', { ascending: false });
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    name: row.name as string,
+    appearance: row.appearance as Appearance,
+    lastSeen: row.last_seen as string,
+  }));
+}
+
+// 送走一只猫（旧设备残留的身份）：删除登记行，影子猫随之消失
+export async function deletePlayer(id: string): Promise<void> {
+  const db = getSupabase();
+  if (!db) return;
+  await db.from('players').delete().eq('room', ROOM_ID).eq('id', id);
+}
+
 export async function recordPresence(playerId: string, event: string): Promise<void> {
   const db = getSupabase();
   if (!db) return;
@@ -93,6 +124,7 @@ interface NoteRow {
   text: string;
   anchor_x: number;
   anchor_y: number;
+  scene?: string;
   created_at: string;
   opened_at: string | null;
 }
@@ -106,6 +138,7 @@ function toNote(row: NoteRow): NoteData {
     text: row.text,
     x: row.anchor_x,
     y: row.anchor_y,
+    scene: row.scene === 'cabin' ? 'cabin' : 'yard',
     createdAt: row.created_at,
     openedAt: row.opened_at,
   };
@@ -118,12 +151,12 @@ export async function fetchOpenNotes(): Promise<NoteData[]> {
   return (data ?? []).map((row) => toNote(row as NoteRow));
 }
 
-export async function insertNote(identity: Identity, kind: NoteKind, text: string, x: number, y: number): Promise<NoteData | null> {
+export async function insertNote(identity: Identity, kind: NoteKind, text: string, x: number, y: number, scene: SceneId): Promise<NoteData | null> {
   const db = getSupabase();
   if (!db) return null;
   const { data } = await db
     .from('notes')
-    .insert({ room: ROOM_ID, author_id: identity.id, author_name: identity.name, kind, text, anchor_x: Math.round(x), anchor_y: Math.round(y) })
+    .insert({ room: ROOM_ID, author_id: identity.id, author_name: identity.name, kind, text, anchor_x: Math.round(x), anchor_y: Math.round(y), scene })
     .select()
     .single();
   return data ? toNote(data as NoteRow) : null;

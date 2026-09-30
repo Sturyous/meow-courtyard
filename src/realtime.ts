@@ -1,5 +1,6 @@
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, ROOM_ID } from './supabase';
+import { deviceTag } from './identity';
 import type { ChatMessage, DuetKind, Emote, NoteData, PlayerSnapshot, PresenceMember, RoomEvent } from './types';
 
 function localTimeZone(): string {
@@ -47,12 +48,12 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
 
     this.callbacks.onStatus('connecting', '正在走进庭院…');
     this.channel = this.client.channel(`courtyard:${ROOM_ID}`, {
-      config: { presence: { key: this.playerId }, broadcast: { self: false, ack: false } },
+      config: { presence: { key: `${this.playerId}:${deviceTag()}` }, broadcast: { self: false, ack: false } },
     });
 
     this.channel
       .on('presence', { event: 'sync' }, () => this.syncPresence())
-      .on('presence', { event: 'leave' }, ({ key: leavingKey }) => this.callbacks.onPlayerLeave(String(leavingKey)))
+      .on('presence', { event: 'leave' }, ({ key: leavingKey }) => this.handlePresenceLeave(String(leavingKey)))
       .on('broadcast', { event: 'room-event' }, ({ payload }) => this.receive(payload))
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
@@ -108,18 +109,33 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
     if (!this.channel) return;
     const state = this.channel.presenceState<Record<string, unknown>>();
     const members: PresenceMember[] = [];
-    const activeIds = new Set<string>();
+    const seen = new Set<string>();
     for (const [key, entries] of Object.entries(state)) {
-      if (key === this.playerId) continue;
+      if (key === this.playerId || key.startsWith(`${this.playerId}:`)) continue;
       const first = entries[0] as { player?: PlayerSnapshot; joinedAt?: string; tz?: string } | undefined;
       if (!first?.player) continue;
-      activeIds.add(first.player.id);
+      if (seen.has(first.player.id)) continue; // 同一只猫的多台设备只算一个成员
+      seen.add(first.player.id);
       members.push({ id: first.player.id, joinedAt: first.joinedAt ?? '' });
       if (typeof first.tz === 'string' && first.tz) this.callbacks.onPartnerTz(first.tz);
       this.callbacks.onPlayer(first.player);
     }
     this.callbacks.onPresenceSync(members);
     this.send({ type: 'snapshot-request', requesterId: this.playerId });
+  }
+
+  // presence key 形如 playerId:deviceTag；同一只猫还有其他设备在线时不算离开
+  private handlePresenceLeave(leavingKey: string): void {
+    const playerId = leavingKey.split(':')[0]!;
+    if (!this.channel) {
+      this.callbacks.onPlayerLeave(playerId);
+      return;
+    }
+    const state = this.channel.presenceState<Record<string, unknown>>();
+    for (const key of Object.keys(state)) {
+      if (key === playerId || key.startsWith(`${playerId}:`)) return;
+    }
+    this.callbacks.onPlayerLeave(playerId);
   }
 
   private receive(value: unknown): void {
