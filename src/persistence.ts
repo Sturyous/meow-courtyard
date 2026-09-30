@@ -1,5 +1,5 @@
 import { getSupabase, supabaseConfig, ROOM_ID } from './supabase';
-import type { Appearance, Identity, NoteData, NoteKind, PlayerSnapshot, SceneId } from './types';
+import type { Appearance, DecorItem, FlowerId, GardenPlot, Identity, NoteData, NoteKind, PlayerSnapshot, SceneId } from './types';
 
 export interface GhostData {
   id: string;
@@ -125,6 +125,7 @@ interface NoteRow {
   anchor_x: number;
   anchor_y: number;
   scene?: string;
+  flower?: string | null;
   created_at: string;
   opened_at: string | null;
 }
@@ -138,7 +139,8 @@ function toNote(row: NoteRow): NoteData {
     text: row.text,
     x: row.anchor_x,
     y: row.anchor_y,
-    scene: row.scene === 'cabin' ? 'cabin' : 'yard',
+    scene: row.scene === 'cabin' ? 'cabin' : row.scene === 'garden' ? 'garden' : 'yard',
+    flower: (row.flower as FlowerId | undefined) ?? null,
     createdAt: row.created_at,
     openedAt: row.opened_at,
   };
@@ -151,12 +153,12 @@ export async function fetchOpenNotes(): Promise<NoteData[]> {
   return (data ?? []).map((row) => toNote(row as NoteRow));
 }
 
-export async function insertNote(identity: Identity, kind: NoteKind, text: string, x: number, y: number, scene: SceneId): Promise<NoteData | null> {
+export async function insertNote(identity: Identity, kind: NoteKind, text: string, x: number, y: number, scene: SceneId, flower: FlowerId | null = null): Promise<NoteData | null> {
   const db = getSupabase();
   if (!db) return null;
   const { data } = await db
     .from('notes')
-    .insert({ room: ROOM_ID, author_id: identity.id, author_name: identity.name, kind, text, anchor_x: Math.round(x), anchor_y: Math.round(y), scene })
+    .insert({ room: ROOM_ID, author_id: identity.id, author_name: identity.name, kind, text, anchor_x: Math.round(x), anchor_y: Math.round(y), scene, flower })
     .select()
     .single();
   return data ? toNote(data as NoteRow) : null;
@@ -222,4 +224,114 @@ export async function fetchRecap(myId: string): Promise<Recap | null> {
     activities,
     unopenedNotes: count ?? 0,
   };
+}
+
+// ---- 小花园 ----
+
+interface PlotRow {
+  plot: number;
+  flower: string | null;
+  stage: number;
+  planted_by: string | null;
+  stage_at: string | null;
+  watered_by: string[] | null;
+  last_watered_at: string | null;
+  last_watered_by: string | null;
+}
+
+function toPlot(row: PlotRow): GardenPlot {
+  return {
+    plot: row.plot,
+    flower: (row.flower as FlowerId | null) ?? null,
+    stage: row.stage,
+    plantedBy: row.planted_by,
+    stageAt: row.stage_at,
+    wateredBy: row.watered_by ?? [],
+    lastWateredAt: row.last_watered_at,
+    lastWateredBy: row.last_watered_by,
+  };
+}
+
+export async function fetchGarden(): Promise<GardenPlot[]> {
+  const db = getSupabase();
+  if (!db) return [];
+  const { data } = await db.from('garden_plots').select('*').eq('room', ROOM_ID).order('plot');
+  return (data ?? []).map((row) => toPlot(row as PlotRow));
+}
+
+export async function upsertPlot(plot: GardenPlot): Promise<void> {
+  const db = getSupabase();
+  if (!db) return;
+  await db.from('garden_plots').upsert({
+    room: ROOM_ID,
+    plot: plot.plot,
+    flower: plot.flower,
+    stage: plot.stage,
+    planted_by: plot.plantedBy,
+    stage_at: plot.stageAt,
+    watered_by: plot.wateredBy,
+    last_watered_at: plot.lastWateredAt,
+    last_watered_by: plot.lastWateredBy,
+  });
+}
+
+interface DecorRow {
+  id: string;
+  flower: string;
+  scene: string;
+  x: number;
+  y: number;
+  placed_by: string;
+}
+
+function toDecor(row: DecorRow): DecorItem {
+  return {
+    id: row.id,
+    flower: row.flower as FlowerId,
+    scene: row.scene === 'cabin' ? 'cabin' : row.scene === 'garden' ? 'garden' : 'yard',
+    x: row.x,
+    y: row.y,
+    placedBy: row.placed_by,
+  };
+}
+
+export async function fetchDecor(): Promise<DecorItem[]> {
+  const db = getSupabase();
+  if (!db) return [];
+  const { data } = await db.from('decor').select('*').eq('room', ROOM_ID);
+  return (data ?? []).map((row) => toDecor(row as DecorRow));
+}
+
+export async function insertDecor(flower: FlowerId, scene: SceneId, x: number, y: number, placedBy: string): Promise<DecorItem | null> {
+  const db = getSupabase();
+  if (!db) return null;
+  const { data } = await db
+    .from('decor')
+    .insert({ room: ROOM_ID, flower, scene, x: Math.round(x), y: Math.round(y), placed_by: placedBy })
+    .select()
+    .single();
+  return data ? toDecor(data as DecorRow) : null;
+}
+
+export async function deleteDecor(id: string): Promise<void> {
+  const db = getSupabase();
+  if (!db) return;
+  await db.from('decor').delete().eq('room', ROOM_ID).eq('id', id);
+}
+
+// ---- 花袋（players.flowers jsonb，形如 {"sunflower": 2}）----
+
+export type FlowerBag = Partial<Record<FlowerId, number>>;
+
+export async function fetchFlowerBag(myId: string): Promise<FlowerBag> {
+  const db = getSupabase();
+  if (!db) return {};
+  const { data } = await db.from('players').select('flowers').eq('room', ROOM_ID).eq('id', myId).maybeSingle();
+  return ((data?.flowers as FlowerBag | null) ?? {}) as FlowerBag;
+}
+
+export async function writeFlowerBag(myId: string, bag: FlowerBag): Promise<void> {
+  const db = getSupabase();
+  if (!db) return;
+  await db.from('players').update({ flowers: bag }).eq('room', ROOM_ID).eq('id', myId);
 }

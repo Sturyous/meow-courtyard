@@ -1,7 +1,7 @@
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, ROOM_ID } from './supabase';
 import { deviceTag } from './identity';
-import type { ChatMessage, DuetKind, Emote, NoteData, PlayerSnapshot, PresenceMember, RoomEvent } from './types';
+import type { ChatMessage, DecorItem, DuetKind, Emote, GardenPlot, NoteData, PlayerSnapshot, PresenceMember, RoomEvent } from './types';
 
 function localTimeZone(): string {
   try {
@@ -26,6 +26,9 @@ interface RoomCallbacks {
   onInteractAccept: (from: string, kind: DuetKind) => void;
   onInteractDecline: (from: string, kind: DuetKind) => void;
   onEmote: (playerId: string, emote: Emote) => void;
+  onGardenUpdated: (plot: GardenPlot) => void;
+  onDecorPlaced: (decor: DecorItem) => void;
+  onDecorRemoved: (decorId: string) => void;
 }
 
 export class RealtimeRoom {  private client: SupabaseClient | null = null;
@@ -82,6 +85,9 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
   sendNotePlaced(note: NoteData): void { this.send({ type: 'note-placed', note }); }
   sendNoteOpened(noteId: string): void { this.send({ type: 'note-opened', noteId }); }
   sendEmote(emote: Emote): void { this.send({ type: 'emote', playerId: this.playerId, emote }); }
+  sendGardenUpdated(plot: GardenPlot): void { this.send({ type: 'garden-updated', plot }); }
+  sendDecorPlaced(decor: DecorItem): void { this.send({ type: 'decor-placed', decor }); }
+  sendDecorRemoved(decorId: string): void { this.send({ type: 'decor-removed', decorId }); }
 
   sendInteractInvite(to: string, fromName: string, kind: DuetKind): void {
     this.send({ type: 'interact-invite', from: this.playerId, fromName, to, kind });
@@ -173,6 +179,18 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
     }
     if (event.type === 'emote' && typeof event.playerId === 'string' && event.playerId !== this.playerId && event.emote) {
       this.callbacks.onEmote(event.playerId, event.emote as Emote);
+      return;
+    }
+    if (event.type === 'garden-updated' && event.plot) {
+      this.callbacks.onGardenUpdated(event.plot as GardenPlot);
+      return;
+    }
+    if (event.type === 'decor-placed' && event.decor) {
+      this.callbacks.onDecorPlaced(event.decor as DecorItem);
+      return;
+    }
+    if (event.type === 'decor-removed' && typeof event.decorId === 'string') {
+      this.callbacks.onDecorRemoved(event.decorId);
       return;
     }
     if ('player' in event && event.player && event.player.id !== this.playerId) {

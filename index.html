@@ -41,6 +41,7 @@
         <button data-activity="toilet"><span>♧</span>上厕所</button>
         <button id="scene-toggle"><span>⌂</span>进屋</button>
         <button id="note-button" class="dock-note"><span>✎</span>留纸条</button>
+        <button id="bag-button" class="dock-bag"><span>❀</span>花袋</button>
       </nav>
 
       <div class="context-menu" id="context-menu" role="menu">
@@ -50,6 +51,8 @@
         <button id="menu-bed" role="menuitem">去窝里睡</button>
         <button id="menu-poke" role="menuitem">戳一下</button>
         <button id="menu-dismiss" role="menuitem">送走这只猫</button>
+        <button id="menu-flower-off" role="menuitem">取下头上的花</button>
+        <button id="menu-decor-remove" role="menuitem">收回这朵花</button>
       </div>
 
       <div class="invite-bar" id="invite-bar" role="alert">
@@ -74,6 +77,7 @@
         <div class="panel">
           <h2>留点什么给 TA</h2>
           <textarea id="note-text" maxlength="200" rows="4" placeholder="写一张纸条（200 字以内）…"></textarea>
+          <div class="note-flower-row" id="note-flower-row"></div>
           <div class="panel-actions">
             <button id="note-place-note">放纸条</button>
             <button id="note-place-treat">放小鱼干</button>
@@ -84,10 +88,33 @@
 
       <div class="overlay" id="note-card" role="dialog" aria-label="纸条">
         <div class="panel paper-panel">
+          <div class="note-card-flower" id="note-card-flower"></div>
           <div class="note-card-text" id="note-card-text"></div>
           <div class="note-card-author" id="note-card-author"></div>
           <div class="panel-actions">
             <button id="note-card-close">收好了</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay" id="plot-panel" role="dialog" aria-label="花圃">
+        <div class="panel">
+          <h2 id="plot-title">花圃</h2>
+          <div class="plot-stage" id="plot-stage"></div>
+          <div class="plot-status" id="plot-status"></div>
+          <div class="panel-actions" id="plot-actions"></div>
+          <div class="panel-actions">
+            <button id="plot-close" class="ghost-button">先不弄了</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="overlay" id="bag-panel" role="dialog" aria-label="花袋">
+        <div class="panel">
+          <h2>花袋</h2>
+          <div class="bag-list" id="bag-list"></div>
+          <div class="panel-actions">
+            <button id="bag-close" class="ghost-button">关上</button>
           </div>
         </div>
       </div>

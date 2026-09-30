@@ -1,10 +1,12 @@
 import { coatPalettes, randomAppearance } from './cats';
 import { dayPhase } from './daynight';
-import type { Activity, Appearance, Direction, DuetKind, Emote, Identity, NoteData, PlayerSnapshot, PublicActivity, SceneId } from './types';
+import { drawDecorFlower, drawFlowerHead, drawGardenFallback, drawHeadFlower, drawPlot, emptyPlot, PLOT_SPOTS, WATER_COLORS } from './garden';
+import type { Activity, Appearance, DecorItem, Direction, DuetKind, Emote, FlowerId, GardenPlot, Identity, NoteData, PlayerSnapshot, PublicActivity, SceneId } from './types';
 
 const WORLD = { width: 960, height: 640 };
 const YARD = { left: 46, top: 72, right: 914, bottom: 592 };
 const CABIN = { left: 88, top: 178, right: 872, bottom: 600 };
+const GARDEN = { left: 60, top: 92, right: 900, bottom: 566 };
 const CAT_RADIUS = 15;
 const SPEED = 112;
 const RENDER_DELAY = 120;
@@ -15,6 +17,7 @@ const HEART_LIFE = 950;
 
 const courtyardImage = loadImage('/assets/courtyard-bg.png');
 const cabinImage = loadImage('/assets/cabin-bg.png');
+const gardenImage = loadImage('/assets/garden-bg.png');
 const catAtlas = loadImage('/assets/cat-atlas.png');
 const catSquat = loadImage('/assets/cat-squat-v1.png');
 const atlasColumns = [
@@ -64,7 +67,14 @@ const YARD_LIGHTS = [
 const FIRE_GLOW = { x: 258, y: 233, radius: 130 };
 const WINDOW_GLASS = { x: 427, y: 84, width: 115, height: 74 };
 
-type ParticleKind = 'heart' | 'zzz' | 'crumb' | 'sand';
+// 花园夜里的萤火虫光点
+const GARDEN_LIGHTS = [
+  { x: 130, y: 200, radius: 60 },
+  { x: 830, y: 420, radius: 60 },
+  { x: 620, y: 540, radius: 55 },
+];
+
+type ParticleKind = 'heart' | 'zzz' | 'crumb' | 'sand' | 'drop';
 
 interface Particle {
   kind: ParticleKind;
@@ -82,6 +92,8 @@ interface GameCallbacks {
   onGhostMenu: (playerId: string, clientX: number, clientY: number) => void;
   onNoteOpen: (note: NoteData) => void;
   onSceneChange: (scene: SceneId) => void;
+  onPlotMenu: (plot: GardenPlot, clientX: number, clientY: number) => void;
+  onDecorMenu: (decor: DecorItem, clientX: number, clientY: number) => void;
 }
 
 interface PositionSample {
@@ -97,6 +109,7 @@ interface RemotePlayer {
   activity: Activity;
   direction: Direction;
   cosleepWith: string | null;
+  headFlower: FlowerId | null;
   scene: SceneId;
   buffer: PositionSample[];
   lastSequence: number;
@@ -113,6 +126,7 @@ interface GhostCat {
   activity: Activity;
   direction: Direction;
   appearance: Appearance;
+  headFlower: FlowerId | null;
   scene: SceneId;
   pokeUntil: number;
 }
@@ -153,6 +167,9 @@ export class CourtyardGame {
   private duet: DuetState | null = null;
   private lastHeartAt = 0;
   private notePlacement: ((x: number, y: number) => void) | null = null;
+  private readonly plots = new Map<number, GardenPlot>();
+  private readonly decorItems = new Map<string, DecorItem>();
+  private pendingArrival: (() => void) | null = null;
   private frame = 0;
   private destroyed = false;
 
@@ -171,6 +188,7 @@ export class CourtyardGame {
       activity: 'idle',
       appearance: identity.appearance,
       cosleepWith: null,
+      headFlower: null,
       scene: 'yard',
       updatedAt: Date.now(),
     };
@@ -201,6 +219,7 @@ export class CourtyardGame {
       existing.direction = snapshot.direction;
       existing.appearance = snapshot.appearance;
       existing.cosleepWith = snapshot.cosleepWith ?? null;
+      existing.headFlower = snapshot.headFlower ?? null;
       existing.scene = scene;
       existing.lastSequence = Math.max(existing.lastSequence, sequence);
       existing.lastAppliedAt = Math.max(existing.lastAppliedAt, snapshot.updatedAt);
@@ -213,6 +232,7 @@ export class CourtyardGame {
       activity: snapshot.activity,
       direction: snapshot.direction,
       cosleepWith: snapshot.cosleepWith ?? null,
+      headFlower: snapshot.headFlower ?? null,
       scene,
       buffer: [{ x: snapshot.x, y: snapshot.y, at: now }],
       lastSequence: sequence,
@@ -250,6 +270,7 @@ export class CourtyardGame {
         activity: remote.activity === 'walk' ? 'idle' : remote.activity,
         direction: remote.direction,
         appearance: remote.appearance,
+        headFlower: remote.headFlower,
         scene: remote.scene,
         pokeUntil: 0,
       });
@@ -279,6 +300,7 @@ export class CourtyardGame {
         activity: snapshot.activity === 'walk' ? 'idle' : snapshot.activity,
         direction: snapshot.direction,
         appearance: snapshot.appearance,
+        headFlower: snapshot.headFlower ?? null,
         scene: snapshot.scene ?? 'yard',
         pokeUntil: 0,
       });
@@ -296,6 +318,64 @@ export class CourtyardGame {
 
   removeNote(noteId: string): void {
     this.groundNotes.delete(noteId);
+  }
+
+  // ---- 小花园 ----
+  setGarden(list: GardenPlot[]): void {
+    this.plots.clear();
+    for (const plot of list) this.plots.set(plot.plot, plot);
+  }
+
+  updatePlot(plot: GardenPlot): void {
+    this.plots.set(plot.plot, plot);
+  }
+
+  getPlot(index: number): GardenPlot {
+    return this.plots.get(index) ?? emptyPlot(index);
+  }
+
+  setDecor(list: DecorItem[]): void {
+    this.decorItems.clear();
+    for (const item of list) this.decorItems.set(item.id, item);
+  }
+
+  addDecorItem(item: DecorItem): void {
+    this.decorItems.set(item.id, item);
+  }
+
+  removeDecorItem(id: string): void {
+    this.decorItems.delete(id);
+  }
+
+  // 别/取头上的花：写入快照并广播（影子猫与远端经快照自然带出）
+  setHeadFlower(flower: FlowerId | null): void {
+    this.local.headFlower = flower;
+    this.local.updatedAt = Date.now();
+    this.callbacks.onActivity(this.getSnapshot());
+  }
+
+  getHeadFlower(): FlowerId | null {
+    return this.local.headFlower ?? null;
+  }
+
+  // 走到某点后执行动作（浇水/收获前的就位）
+  approachAnd(x: number, y: number, fn: () => void): void {
+    this.endDuet();
+    this.pendingActivity = null;
+    this.pendingCosleepId = null;
+    this.pendingArrival = fn;
+    this.local.activity = 'walk';
+    this.autoTarget = { x, y };
+    this.local.updatedAt = Date.now();
+    this.callbacks.onActivity(this.getSnapshot());
+  }
+
+  // 浇水动效：一蓬水珠洒向花位
+  splashWater(x: number, y: number): void {
+    const now = this.frame;
+    for (let i = 0; i < 12; i++) {
+      this.particles.push({ kind: 'drop', x: x + randomInt(-16, 16), y: y - 26 + randomInt(-8, 4), at: now + randomInt(0, 160) });
+    }
   }
 
   addBubble(playerId: string, text: string): void {
@@ -379,27 +459,37 @@ export class CourtyardGame {
     return this.scene;
   }
 
-  // 场景切换：走进庭院顶门进屋，踩上门口地垫回院子；也可以由 dock 按钮直接调用
+  // 场景切换：庭院顶门 → 小屋，庭院下门 → 花园；花园顶路 / 小屋地垫 → 回院子；也可由 dock 按钮直接调用
   switchScene(next?: SceneId): void {
     const target = next ?? (this.scene === 'yard' ? 'cabin' : 'yard');
     if (target === this.scene) return;
+    const from = this.scene;
     this.scene = target;
     this.endDuet();
     this.local.cosleepWith = null;
     this.pendingCosleepId = null;
     this.pendingActivity = null;
     this.autoTarget = null;
+    this.pendingArrival = null;
     this.notePlacement = null;
     if (target === 'cabin') {
       this.local.x = 480;
       this.local.y = 536;
+    } else if (target === 'garden') {
+      // 从庭院下门进来：落在花园顶部石板路口
+      this.local.x = 480;
+      this.local.y = 150;
+    } else if (from === 'garden') {
+      // 从花园顶路回院子：落在庭院下门口
+      this.local.x = 480;
+      this.local.y = 520;
     } else {
       this.local.x = 480;
       this.local.y = 132;
     }
     this.local.scene = target;
     this.local.activity = 'idle';
-    this.local.direction = target === 'cabin' ? 'up' : 'down';
+    this.local.direction = target === 'cabin' || from === 'garden' ? 'up' : 'down';
     this.local.updatedAt = Date.now();
     this.callbacks.onSceneChange(target);
     this.callbacks.onActivity(this.getSnapshot());
@@ -450,7 +540,7 @@ export class CourtyardGame {
       const point = this.canvasPoint(event.clientX, event.clientY);
       const handler = this.notePlacement;
       this.notePlacement = null;
-      const bounds = this.scene === 'yard' ? YARD : CABIN;
+      const bounds = this.scene === 'yard' ? YARD : this.scene === 'cabin' ? CABIN : GARDEN;
       handler(clamp(point.x, bounds.left + 10, bounds.right - 10), clamp(point.y, bounds.top + 10, bounds.bottom - 10));
     });
 
@@ -461,6 +551,25 @@ export class CourtyardGame {
         return;
       }
       const point = this.canvasPoint(event.clientX, event.clientY);
+
+      // 花园里的土坑：右键开花圃面板
+      if (this.scene === 'garden') {
+        for (let index = 0; index < PLOT_SPOTS.length; index++) {
+          const spot = PLOT_SPOTS[index]!;
+          if (Math.abs(point.x - spot.x) < 30 && Math.abs(point.y - spot.y) < 22) {
+            this.callbacks.onPlotMenu(this.getPlot(index), event.clientX, event.clientY);
+            return;
+          }
+        }
+      }
+      // 装饰花：右键可收回
+      for (const item of this.decorItems.values()) {
+        if (item.scene !== this.scene) continue;
+        if (Math.hypot(point.x - item.x, point.y - item.y) < 20) {
+          this.callbacks.onDecorMenu(item, event.clientX, event.clientY);
+          return;
+        }
+      }
 
       for (const note of this.groundNotes.values()) {
         if (note.scene !== this.scene) continue;
@@ -527,6 +636,7 @@ export class CourtyardGame {
       this.autoTarget = null;
       this.pendingActivity = null;
       this.pendingCosleepId = null;
+      this.pendingArrival = null;
       this.endDuet();
       if (this.local.cosleepWith) this.local.cosleepWith = null;
       this.local.activity = 'walk';
@@ -541,6 +651,8 @@ export class CourtyardGame {
         this.local.x = this.autoTarget.x;
         this.local.y = this.autoTarget.y;
         this.autoTarget = null;
+        const arrival = this.pendingArrival;
+        this.pendingArrival = null;
         if (this.pendingCosleepId) {
           this.local.cosleepWith = this.pendingCosleepId;
           this.pendingCosleepId = null;
@@ -550,6 +662,7 @@ export class CourtyardGame {
         }
         this.pendingActivity = null;
         this.callbacks.onActivity(this.getSnapshot());
+        if (arrival) arrival();
       } else {
         const step = Math.min(SPEED * 0.82 * dt, distance);
         this.moveLocal(tx / distance * step, ty / distance * step);
@@ -559,10 +672,14 @@ export class CourtyardGame {
       this.local.activity = 'idle';
     }
 
-    // 走进庭院顶门进屋，踩上小屋门口地垫回院子
+    // 庭院顶门 → 小屋；庭院下门 → 花园；小屋地垫 / 花园顶路 → 回院子
     if (this.scene === 'yard' && this.local.y <= YARD.top + CAT_RADIUS + 6 && Math.abs(this.local.x - 480) < 62) {
       this.switchScene('cabin');
+    } else if (this.scene === 'yard' && this.local.y >= YARD.bottom - CAT_RADIUS - 4 && Math.abs(this.local.x - 480) < 62) {
+      this.switchScene('garden');
     } else if (this.scene === 'cabin' && this.local.y >= CABIN.bottom - CAT_RADIUS - 4 && Math.abs(this.local.x - 480) < 50) {
+      this.switchScene('yard');
+    } else if (this.scene === 'garden' && this.local.y <= GARDEN.top + CAT_RADIUS + 6 && Math.abs(this.local.x - 480) < 60) {
       this.switchScene('yard');
     }
 
@@ -689,7 +806,7 @@ export class CourtyardGame {
   }
 
   private moveLocal(dx: number, dy: number): void {
-    const bounds = this.scene === 'yard' ? YARD : CABIN;
+    const bounds = this.scene === 'yard' ? YARD : this.scene === 'cabin' ? CABIN : GARDEN;
     this.local.x = clamp(this.local.x + dx, bounds.left + CAT_RADIUS, bounds.right - CAT_RADIUS);
     this.local.y = clamp(this.local.y + dy, bounds.top + CAT_RADIUS, bounds.bottom - CAT_RADIUS);
     this.local.updatedAt = Date.now();
@@ -700,10 +817,13 @@ export class CourtyardGame {
     ctx.clearRect(0, 0, WORLD.width, WORLD.height);
     if (this.scene === 'yard') {
       drawCourtyard(ctx, this.frame);
-    } else {
+    } else if (this.scene === 'cabin') {
       drawCabin(ctx, this.frame);
+    } else {
+      this.drawGardenScene(ctx);
     }
     this.drawNotes(ctx);
+    this.drawDecor(ctx);
 
     const cast: { entity: OverheadEntity & PlayerSnapshotLike; label: string; ghost: boolean; poke: boolean }[] = [];
     for (const remote of this.remotes.values()) {
@@ -732,6 +852,29 @@ export class CourtyardGame {
     this.applyDayNight(ctx);
   }
 
+  // 花园场景：背景图 → 代码绘制的 6 个土坑（长在背景上、猫之下）
+  private drawGardenScene(ctx: CanvasRenderingContext2D): void {
+    if (gardenImage.complete && gardenImage.naturalWidth > 0) {
+      ctx.save();
+      ctx.filter = 'saturate(92%)';
+      ctx.drawImage(gardenImage, 0, 0, WORLD.width, WORLD.height);
+      ctx.restore();
+    } else {
+      drawGardenFallback(ctx, WORLD.width, WORLD.height, this.frame);
+    }
+    for (let index = 0; index < PLOT_SPOTS.length; index++) {
+      drawPlot(ctx, this.getPlot(index), PLOT_SPOTS[index]!, this.frame);
+    }
+  }
+
+  // 门口/场景里的装饰花（所有场景通用，种在地面）
+  private drawDecor(ctx: CanvasRenderingContext2D): void {
+    for (const item of this.decorItems.values()) {
+      if (item.scene !== this.scene) continue;
+      drawDecorFlower(ctx, item.flower, item.x, item.y, this.frame);
+    }
+  }
+
   // 昼夜叠色与灯光：multiply 压暗全场（含猫），再叠加光源光晕。
   // 两端各自按本地真实时间计算——时差让"我这儿天黑了你那儿还是下午"成为日常。
   private applyDayNight(ctx: CanvasRenderingContext2D): void {
@@ -747,6 +890,11 @@ export class CourtyardGame {
     if (this.scene === 'yard') {
       if (phase.glow > 0.02) {
         for (const spot of YARD_LIGHTS) drawGlow(ctx, spot.x, spot.y, spot.radius, phase.glow, this.frame);
+      }
+    } else if (this.scene === 'garden') {
+      // 夜里萤火虫点点
+      if (phase.glow > 0.02) {
+        for (const spot of GARDEN_LIGHTS) drawGlow(ctx, spot.x, spot.y, spot.radius, phase.glow * 0.8, this.frame);
       }
     } else {
       // 壁炉常燃，夜里光晕更暖更亮
@@ -768,20 +916,20 @@ export class CourtyardGame {
     }
   }
 
-  // 异场景指示牌：TA 在另一个场景、或 TA 在另一个场景留了东西时，在门口立小木牌
+  // 异场景指示牌：TA 在别的场景、或 TA 在别的场景留了东西时，在门口立小木牌
   private drawSceneSign(ctx: CanvasRenderingContext2D): void {
-    const away = this.scene === 'yard' ? '屋里' : '院子里';
+    const sceneName: Record<SceneId, string> = { yard: '院子里', cabin: '屋里', garden: '花园里' };
     const texts: string[] = [];
     for (const remote of this.remotes.values()) {
-      if (remote.scene !== this.scene) texts.push(`${remote.name} 在${away}`);
+      if (remote.scene !== this.scene) texts.push(`${remote.name} 在${sceneName[remote.scene]}`);
     }
     const notesElsewhere = [...this.groundNotes.values()]
       .filter((note) => note.scene !== this.scene && note.authorId !== this.local.id).length;
-    if (notesElsewhere > 0) texts.push(`${away}有 ${notesElsewhere} 个 TA 留的东西`);
+    if (notesElsewhere > 0) texts.push(`别处有 ${notesElsewhere} 个 TA 留的东西`);
 
     texts.forEach((text, index) => {
-      const x = 480;
-      const baseY = this.scene === 'yard' ? 108 : 520;
+      const x = this.scene === 'garden' ? 690 : 480;
+      const baseY = this.scene === 'yard' ? 108 : this.scene === 'cabin' ? 520 : 240;
       const y = baseY + index * 30;
       const bob = Math.round(Math.sin(this.frame / 500) * 1.5);
       ctx.save();
@@ -852,6 +1000,13 @@ export class CourtyardGame {
         ctx.fillStyle = '#ffd97a';
         ctx.fillText('!', x, y - 12 + bounce);
       }
+      // 附在纸条上的花：别在纸角上
+      if (note.flower) {
+        ctx.save();
+        ctx.translate(x + 10, y - 6);
+        drawFlowerHead(ctx, note.flower, 0.55, Math.sin(now / 300 + x), false);
+        ctx.restore();
+      }
     }
   }
 
@@ -886,6 +1041,7 @@ export class CourtyardGame {
     const now = this.frame;
     for (const particle of this.particles) {
       const age = now - particle.at;
+      if (age < 0) continue; //  staggered 粒子还没到出场时间
       const progress = age / particleLife(particle.kind);
       ctx.save();
       ctx.globalAlpha = 1 - progress;
@@ -901,6 +1057,10 @@ export class CourtyardGame {
         ctx.fillRect(Math.round(particle.x), Math.round(particle.y + progress * 10), 3, 3);
         ctx.fillStyle = '#d9a95e';
         ctx.fillRect(Math.round(particle.x) + 1, Math.round(particle.y + progress * 10) + 2, 1, 1);
+      } else if (particle.kind === 'drop') {
+        // 浇水水珠：斜向下洒落
+        ctx.fillStyle = WATER_COLORS[Math.floor(hash(particle.x, particle.y) * WATER_COLORS.length)]!;
+        ctx.fillRect(Math.round(particle.x - progress * 6), Math.round(particle.y + progress * 26), 2, 3);
       } else {
         ctx.fillStyle = '#e8d5a6';
         ctx.fillRect(Math.round(particle.x - progress * 14), Math.round(particle.y - Math.sin(progress * Math.PI) * 12), 3, 3);
@@ -918,6 +1078,7 @@ interface PlayerSnapshotLike {
   direction: Direction;
   appearance: Appearance;
   cosleepWith?: string | null;
+  headFlower?: FlowerId | null;
 }
 
 function drawCourtyard(ctx: CanvasRenderingContext2D, time: number): void {
@@ -1203,6 +1364,13 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
     ctx.fillStyle = dark; ctx.fillRect(px - 13, py - 11, 7, 7); ctx.fillRect(px + 6, py - 11, 7, 7);
     ctx.fillStyle = '#e8c27b'; ctx.fillRect(px - 19, py + 2, 38, 16); ctx.fillStyle = '#c78b62'; ctx.fillRect(px - 19, py + 2, 38, 5);
     ctx.fillStyle = '#4b4236'; ctx.fillRect(px - 6, py - 2, 4, 2); ctx.fillRect(px + 4, py - 2, 4, 2);
+    if (player.headFlower) {
+      // 睡觉时花放在枕边
+      ctx.save();
+      ctx.translate(px - 20, py - 12);
+      drawHeadFlower(ctx, player.headFlower, time);
+      ctx.restore();
+    }
     drawLabel(ctx, x, py - 24, label, own); return;
   }
 
@@ -1247,6 +1415,14 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
     ctx.fillStyle = '#8b5a43'; ctx.fillRect(px + (flip ? 17 : 21), py - 17, 3, 11);
   }
   if (activity === 'toilet') { ctx.fillStyle = '#d7c295'; ctx.fillRect(px - 18, py + 13, 36, 6); }
+  if (player.headFlower && direction !== 'up') {
+    // 别在耳后：随头部 bob，左右方向时靠前侧
+    const side = direction === 'left' ? -10 : 10;
+    ctx.save();
+    ctx.translate(px + side, py - 25);
+    drawHeadFlower(ctx, player.headFlower, time);
+    ctx.restore();
+  }
   drawLabel(ctx, x, py - 29, label, own);
 }
 
@@ -1299,6 +1475,15 @@ function drawAtlasCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike,
     height,
   );
   ctx.restore();
+
+  // 别在头上的花：随头顶 breathe 起伏，左右方向时别在靠前侧耳后，朝上时藏在脑后不画
+  if (player.headFlower && direction !== 'up') {
+    const side = direction === 'left' ? -width * 0.18 : width * 0.18;
+    ctx.save();
+    ctx.translate(Math.round(x + offsetX + side), Math.round(y - height * anchor) + breathe + Math.round(height * 0.1));
+    drawHeadFlower(ctx, player.headFlower, time);
+    ctx.restore();
+  }
 
   if (activity === 'play') {
     const ballX = Math.round(x + Math.sin(time / 190) * 29);
@@ -1486,7 +1671,7 @@ function hashString(value: string): number {
   return Math.abs(result);
 }
 function particleLife(kind: ParticleKind): number {
-  return kind === 'heart' ? HEART_LIFE : kind === 'zzz' ? 1800 : kind === 'crumb' ? 900 : 1000;
+  return kind === 'heart' ? HEART_LIFE : kind === 'zzz' ? 1800 : kind === 'crumb' ? 900 : kind === 'drop' ? 620 : 1000;
 }
 
 function loadImage(source: string): HTMLImageElement {

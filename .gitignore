@@ -7,3 +7,8 @@ tmp/
 *.log
 .workbuddy/
 *-out.txt
+
+# 本地调试/临时文件（不入库，可手动回收站清理）
+*.tmp
+*-diff.txt
+docs/asset-src/*check*.png

@@ -26,6 +26,36 @@ create table if not exists notes (
 
 -- 已建过表的部署：补场景列（纸条/小鱼干支持留在小屋里），幂等可重复执行
 alter table notes add column if not exists scene text not null default 'yard';
+-- 纸条可附上一朵花（TA 拆开时花转入 TA 的花袋）
+alter table notes add column if not exists flower text;
+-- 花袋：挂在 players 行上，upsert 只写固定列不会互相覆盖
+alter table players add column if not exists flowers jsonb not null default '{}';
+
+-- 小花园：6 个花位；双方都浇才长一阶，72h 未浇只耷拉不枯死
+create table if not exists garden_plots (
+  room            text not null default 'mossbell-courtyard',
+  plot            int  not null,
+  flower          text,
+  stage           int  not null default 0,
+  planted_by      text,
+  stage_at        timestamptz,
+  watered_by      text[] not null default '{}',
+  last_watered_at timestamptz,
+  last_watered_by text,
+  primary key (room, plot)
+);
+
+-- 装饰花：从花袋种到任意场景地面
+create table if not exists decor (
+  id        uuid primary key default gen_random_uuid(),
+  room      text not null default 'mossbell-courtyard',
+  flower    text not null,
+  scene     text not null default 'yard',
+  x         int not null,
+  y         int not null,
+  placed_by text not null,
+  placed_at timestamptz not null default now()
+);
 
 create table if not exists presence_log (
   id        bigint generated always as identity primary key,
@@ -41,6 +71,8 @@ create index if not exists notes_open on notes (room) where opened_at is null;
 alter table players disable row level security;
 alter table notes disable row level security;
 alter table presence_log disable row level security;
+alter table garden_plots disable row level security;
+alter table decor disable row level security;
 
 -- 北极星：周均在线时长（分钟）
 create or replace view weekly_online_minutes as
