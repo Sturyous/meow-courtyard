@@ -25,6 +25,7 @@ export interface PlayerSnapshot {
   activity: Activity;
   appearance: Appearance;
   cosleepWith: string | null;
+  nuzzleWith?: string | null;
   scene: SceneId;
   headFlower?: FlowerId | null;
   updatedAt: number;
@@ -34,6 +35,18 @@ export const emotes = ['heart', 'zzz', 'question', 'fish', 'star', 'angry'] as c
 export type Emote = (typeof emotes)[number];
 
 export type DuetKind = 'nuzzle' | 'cosleep';
+
+export interface DuetInvite {
+  requestId: string;
+  from: string;
+  fromName: string;
+  to: string;
+  kind: DuetKind;
+  scene: SceneId;
+  expiresAt: number;
+  x: number;
+  y: number;
+}
 
 export type NoteKind = 'note' | 'treat';
 
@@ -82,9 +95,9 @@ export type RoomEvent =
   | { type: 'snapshot-response'; player: PlayerSnapshot }
   | { type: 'note-placed'; note: NoteData }
   | { type: 'note-opened'; noteId: string }
-  | { type: 'interact-invite'; from: string; fromName: string; to: string; kind: DuetKind }
-  | { type: 'interact-accept'; from: string; to: string; kind: DuetKind }
-  | { type: 'interact-decline'; from: string; to: string; kind: DuetKind }
+  | ({ type: 'interact-invite' } & DuetInvite)
+  | { type: 'interact-accept'; from: string; to: string; requestId: string }
+  | { type: 'interact-decline'; from: string; to: string; requestId: string }
   | { type: 'emote'; playerId: string; emote: Emote }
   | { type: 'garden-updated'; plot: GardenPlot }
   | { type: 'decor-placed'; decor: DecorItem }

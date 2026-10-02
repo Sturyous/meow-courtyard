@@ -1,7 +1,7 @@
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import { getSupabase, ROOM_ID } from './supabase';
 import { deviceTag } from './identity';
-import type { ChatMessage, DecorItem, DuetKind, Emote, GardenPlot, NoteData, PlayerSnapshot, PresenceMember, RoomEvent } from './types';
+import type { ChatMessage, DecorItem, DuetInvite, Emote, GardenPlot, NoteData, PlayerSnapshot, PresenceMember, RoomEvent } from './types';
 
 function localTimeZone(): string {
   try {
@@ -22,19 +22,20 @@ interface RoomCallbacks {
   onReady: () => void;
   onNotePlaced: (note: NoteData) => void;
   onNoteOpened: (noteId: string) => void;
-  onInteractInvite: (from: string, fromName: string, kind: DuetKind) => void;
-  onInteractAccept: (from: string, kind: DuetKind) => void;
-  onInteractDecline: (from: string, kind: DuetKind) => void;
+  onInteractInvite: (invite: DuetInvite) => void;
+  onInteractAccept: (from: string, requestId: string) => void;
+  onInteractDecline: (from: string, requestId: string) => void;
   onEmote: (playerId: string, emote: Emote) => void;
   onGardenUpdated: (plot: GardenPlot) => void;
   onDecorPlaced: (decor: DecorItem) => void;
   onDecorRemoved: (decorId: string) => void;
 }
 
-export class RealtimeRoom {  private client: SupabaseClient | null = null;
+export class RealtimeRoom {
+  private client: SupabaseClient | null = null;
   private channel: RealtimeChannel | null = null;
   private sequence = 0;
-  private joinedAt = '';
+  private joinedAt = new Date().toISOString();
   private readonly playerId: string;
 
   constructor(playerId: string, private readonly callbacks: RoomCallbacks) {
@@ -61,7 +62,7 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           this.callbacks.onStatus('online', '庭院已连接');
-          await this.channel?.track({ player: this.callbacks.getLocalPlayer(), joinedAt: new Date().toISOString(), tz: localTimeZone() });
+          await this.channel?.track({ player: this.callbacks.getLocalPlayer(), joinedAt: this.joinedAt, tz: localTimeZone() });
           this.callbacks.onReady();
           this.send({ type: 'snapshot-request', requesterId: this.playerId });
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
@@ -89,16 +90,16 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
   sendDecorPlaced(decor: DecorItem): void { this.send({ type: 'decor-placed', decor }); }
   sendDecorRemoved(decorId: string): void { this.send({ type: 'decor-removed', decorId }); }
 
-  sendInteractInvite(to: string, fromName: string, kind: DuetKind): void {
-    this.send({ type: 'interact-invite', from: this.playerId, fromName, to, kind });
+  sendInteractInvite(invite: DuetInvite): void {
+    this.send({ type: 'interact-invite', ...invite });
   }
 
-  sendInteractAccept(to: string, kind: DuetKind): void {
-    this.send({ type: 'interact-accept', from: this.playerId, to, kind });
+  sendInteractAccept(to: string, requestId: string): void {
+    this.send({ type: 'interact-accept', from: this.playerId, to, requestId });
   }
 
-  sendInteractDecline(to: string, kind: DuetKind): void {
-    this.send({ type: 'interact-decline', from: this.playerId, to, kind });
+  sendInteractDecline(to: string, requestId: string): void {
+    this.send({ type: 'interact-decline', from: this.playerId, to, requestId });
   }
 
   sendChat(name: string, text: string): void {
@@ -166,15 +167,16 @@ export class RealtimeRoom {  private client: SupabaseClient | null = null;
       return;
     }
     if (event.type === 'interact-invite' && event.to === this.playerId && typeof event.from === 'string') {
-      this.callbacks.onInteractInvite(event.from, String(event.fromName ?? '喵喵'), event.kind as DuetKind);
+      if (typeof event.requestId !== 'string' || !['nuzzle','cosleep'].includes(String(event.kind)) || !['yard','cabin','garden'].includes(String(event.scene)) || !Number.isFinite(event.expiresAt) || !Number.isFinite(event.x) || !Number.isFinite(event.y)) return;
+      this.callbacks.onInteractInvite(event as DuetInvite);
       return;
     }
     if (event.type === 'interact-accept' && event.to === this.playerId && typeof event.from === 'string') {
-      this.callbacks.onInteractAccept(event.from, event.kind as DuetKind);
+      if (typeof event.requestId === 'string') this.callbacks.onInteractAccept(event.from, event.requestId);
       return;
     }
     if (event.type === 'interact-decline' && event.to === this.playerId && typeof event.from === 'string') {
-      this.callbacks.onInteractDecline(event.from, event.kind as DuetKind);
+      if (typeof event.requestId === 'string') this.callbacks.onInteractDecline(event.from, event.requestId);
       return;
     }
     if (event.type === 'emote' && typeof event.playerId === 'string' && event.playerId !== this.playerId && event.emote) {

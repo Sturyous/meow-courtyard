@@ -1,5 +1,6 @@
-import { coatPalettes, randomAppearance } from './cats';
+import { randomAppearance } from './cats';
 import { dayPhase } from './daynight';
+import { drawCatSprite } from './cat-sprites';
 import { drawDecorFlower, drawFlowerHead, drawGardenFallback, drawHeadFlower, drawPlot, emptyPlot, PLOT_SPOTS, WATER_COLORS } from './garden';
 import type { Activity, Appearance, DecorItem, Direction, DuetKind, Emote, FlowerId, GardenPlot, Identity, NoteData, PlayerSnapshot, PublicActivity, SceneId } from './types';
 
@@ -16,25 +17,8 @@ const EMOTE_LIFE = 2600;
 const HEART_LIFE = 950;
 
 const courtyardImage = loadImage('/assets/courtyard-bg.png');
-const cabinImage = loadImage('/assets/cabin-bg.png');
+const cabinImage = loadImage('/assets/cabin-clean.png');
 const gardenImage = loadImage('/assets/garden-bg.png');
-const catAtlas = loadImage('/assets/cat-atlas.png');
-const catSquat = loadImage('/assets/cat-squat-v1.png');
-const atlasColumns = [
-  { x: 10, width: 210 },
-  { x: 230, width: 215 },
-  { x: 452, width: 215 },
-  { x: 675, width: 205 },
-] as const;
-const atlasRows = [
-  { y: 60, height: 240 },
-  { y: 330, height: 210 },
-  { y: 575, height: 235 },
-  { y: 850, height: 210 },
-  { y: 1105, height: 240 },
-  { y: 1465, height: 210 },
-] as const;
-
 const beds = [
   { x: 143, y: 148, color: '#d98273' },
   { x: 231, y: 148, color: '#7ca6a1' },
@@ -43,8 +27,8 @@ const beds = [
 ];
 
 const targets: Record<Exclude<PublicActivity, 'play' | 'sleep'>, { x: number; y: number }> = {
-  study: { x: 674, y: 232 },
-  eat: { x: 159, y: 510 },
+  study: { x: 746, y: 195 },
+  eat: { x: 115, y: 438 },
   toilet: { x: 806, y: 432 },
 };
 
@@ -109,6 +93,7 @@ interface RemotePlayer {
   activity: Activity;
   direction: Direction;
   cosleepWith: string | null;
+  nuzzleWith: string | null;
   headFlower: FlowerId | null;
   scene: SceneId;
   buffer: PositionSample[];
@@ -200,6 +185,24 @@ export class CourtyardGame {
     return structuredClone({ ...this.local, updatedAt: Date.now() });
   }
 
+  restoreHeadFlower(flower: FlowerId | null): void {
+    this.local.headFlower = flower;
+  }
+
+  canInteract(id: string): boolean {
+    return this.remotes.get(id)?.scene === this.scene;
+  }
+
+  duetAnchor(point: { x: number; y: number } = this.local): { x: number; y: number } {
+    const x = clamp(point.x, 110, 850), y = clamp(point.y, 280, 510);
+    const onFurniture = this.scene === 'yard'
+      ? (x < 300 && y < 285) || (x > 660 && y < 285) || (x < 245 && y > 385) || (x > 700 && y > 345)
+      : this.scene === 'cabin'
+        ? x < 360 || x > 630
+        : PLOT_SPOTS.some(spot => Math.abs(x - spot.x) < 80 && Math.abs(y - spot.y) < 60);
+    return onFurniture ? { x: 480, y: this.scene === 'cabin' ? 400 : this.scene === 'garden' ? 280 : 350 } : { x, y };
+  }
+
   addOrUpdateRemote(snapshot: PlayerSnapshot, sequence = 0): void {
     if (snapshot.id === this.local.id || !validSnapshot(snapshot)) return;
     this.ghosts.delete(snapshot.id);
@@ -210,8 +213,9 @@ export class CourtyardGame {
       // 同一只猫多台设备同时在线时，各设备的序列号各自计数会互相挡住，
       // 用快照自带的 updatedAt（发送端时钟）做"最新者胜"仲裁
       const staleBySequence = sequence > 0 && sequence <= existing.lastSequence;
-      const staleByClock = snapshot.updatedAt > 0 && snapshot.updatedAt <= existing.lastAppliedAt;
-      if (staleBySequence && staleByClock) return;
+      const staleByClock = snapshot.updatedAt < existing.lastAppliedAt;
+      if (staleByClock || (staleBySequence && snapshot.updatedAt === existing.lastAppliedAt)) return;
+      if (existing.scene !== scene) { existing.buffer.length = 0; existing.x = snapshot.x; existing.y = snapshot.y; }
       existing.buffer.push({ x: snapshot.x, y: snapshot.y, at: now });
       if (existing.buffer.length > BUFFER_LIMIT) existing.buffer.shift();
       existing.name = snapshot.name;
@@ -219,6 +223,7 @@ export class CourtyardGame {
       existing.direction = snapshot.direction;
       existing.appearance = snapshot.appearance;
       existing.cosleepWith = snapshot.cosleepWith ?? null;
+      existing.nuzzleWith = snapshot.nuzzleWith ?? null;
       existing.headFlower = snapshot.headFlower ?? null;
       existing.scene = scene;
       existing.lastSequence = Math.max(existing.lastSequence, sequence);
@@ -232,6 +237,7 @@ export class CourtyardGame {
       activity: snapshot.activity,
       direction: snapshot.direction,
       cosleepWith: snapshot.cosleepWith ?? null,
+      nuzzleWith: snapshot.nuzzleWith ?? null,
       headFlower: snapshot.headFlower ?? null,
       scene,
       buffer: [{ x: snapshot.x, y: snapshot.y, at: now }],
@@ -259,8 +265,8 @@ export class CourtyardGame {
   removeRemote(id: string): void {
     const remote = this.remotes.get(id);
     this.remotes.delete(id);
-    if (this.duet?.partnerId === id) this.duet = null;
-    if (this.local.cosleepWith === id) this.local.cosleepWith = null;
+    if (this.duet?.partnerId === id || this.pendingCosleepId === id) this.endDuet();
+    if (this.local.cosleepWith === id) { this.local.cosleepWith = null; this.callbacks.onActivity(this.getSnapshot()); }
     if (remote) {
       this.ghosts.set(id, {
         id,
@@ -284,6 +290,7 @@ export class CourtyardGame {
   }
 
   assignBeds(order: string[]): void {
+    // ponytail: four yard beds / two facility seats; add facilities before bigger rooms.
     this.bedAssignments.clear();
     order.forEach((id, index) => this.bedAssignments.set(id, index % beds.length));
   }
@@ -393,38 +400,36 @@ export class CourtyardGame {
     this.notePlacement = handler;
   }
 
-  startNuzzle(partnerId: string): void {
+  startNuzzle(partnerId: string, anchor?: { x: number; y: number }): void {
     const partner = this.remotes.get(partnerId);
-    if (!partner) return;
+    if (!partner || partner.scene !== this.scene) return;
     this.endDuet();
     this.local.cosleepWith = null;
     this.pendingCosleepId = null;
-    const mx = (this.local.x + partner.x) / 2;
-    const my = (this.local.y + partner.y) / 2;
-    const dx = mx - this.local.x;
-    const dy = my - this.local.y;
-    const distance = Math.hypot(dx, dy) || 1;
-    const stop = Math.max(0, distance - 30);
-    this.autoTarget = { x: this.local.x + (dx / distance) * stop, y: this.local.y + (dy / distance) * stop };
+    const mx = anchor?.x ?? (this.local.x + partner.x) / 2;
+    const my = anchor?.y ?? (this.local.y + partner.y) / 2;
+    const target = this.duetAnchor({ x: mx, y: my });
+    this.autoTarget = { x: target.x + (this.local.id < partnerId ? -24 : 24), y: target.y };
     this.pendingActivity = null;
     this.local.activity = 'walk';
     this.duet = { kind: 'nuzzle', partnerId, phase: 'approach', until: performance.now() + 9000 };
+    this.callbacks.onActivity(this.getSnapshot());
   }
 
   startCosleep(partnerId: string): void {
     const partner = this.remotes.get(partnerId);
     if (!partner) return;
     this.endDuet();
+    this.switchScene('cabin');
     this.pendingCosleepId = partnerId;
     this.pendingActivity = 'sleep';
-    this.autoTarget = { x: partner.x, y: partner.y };
+    this.autoTarget = { x: cabinTargets.cushion.x + (this.local.id < partnerId ? -28 : 28), y: cabinTargets.cushion.y };
     this.local.activity = 'walk';
+    this.callbacks.onActivity(this.getSnapshot());
   }
 
   acceptCosleep(inviterId: string): void {
-    this.local.cosleepWith = inviterId;
-    this.local.updatedAt = Date.now();
-    this.callbacks.onActivity(this.getSnapshot());
+    this.startCosleep(inviterId);
   }
 
   setActivity(activity: PublicActivity): void {
@@ -441,7 +446,7 @@ export class CourtyardGame {
       return;
     }
     // 食盆和猫砂盆都在院子里：在小屋点吃饭/上厕所会先走回院子
-    if (this.scene === 'cabin' && (activity === 'eat' || activity === 'toilet')) {
+    if ((this.scene !== 'yard' && (activity === 'eat' || activity === 'toilet')) || (this.scene === 'garden' && activity === 'study')) {
       this.switchScene('yard');
     }
     this.pendingActivity = activity === 'play' ? null : activity;
@@ -451,6 +456,9 @@ export class CourtyardGame {
       : this.scene === 'cabin'
         ? { ...cabinTargets.study }
         : { ...targets[activity] };
+    const seat = (this.bedAssignments.get(this.local.id) ?? 0) % 2;
+    if (this.autoTarget && activity === 'study') this.autoTarget.x += seat * (this.scene === 'cabin' ? 76 : 60);
+    if (this.autoTarget && activity === 'eat') this.autoTarget.x += seat * 40;
     this.local.updatedAt = Date.now();
     this.callbacks.onActivity(this.getSnapshot());
   }
@@ -498,12 +506,13 @@ export class CourtyardGame {
   // 回自己的窝睡：院子里是猫窝，小屋里是壁炉前的双人软垫（右键自己 → 去窝里睡）
   sleepInBed(): void {
     this.endDuet();
+    if (this.scene === 'garden') this.switchScene('yard');
     this.local.cosleepWith = null;
     this.pendingCosleepId = null;
     this.pendingActivity = 'sleep';
     this.local.activity = 'walk';
     this.autoTarget = this.scene === 'cabin'
-      ? { ...cabinTargets.cushion }
+      ? { x: cabinTargets.cushion.x + ((this.bedAssignments.get(this.local.id) ?? 0) % 2 ? 28 : -28), y: cabinTargets.cushion.y }
       : { ...beds[this.bedAssignments.get(this.local.id) ?? 0]! };
     this.local.updatedAt = Date.now();
     this.callbacks.onActivity(this.getSnapshot());
@@ -521,6 +530,11 @@ export class CourtyardGame {
 
   private endDuet(): void {
     this.duet = null;
+    this.local.nuzzleWith = null;
+    this.pendingArrival = null;
+    this.autoTarget = null;
+    this.pendingActivity = null;
+    this.pendingCosleepId = null;
   }
 
   private bindInput(): void {
@@ -616,15 +630,16 @@ export class CourtyardGame {
 
   private readonly loop = (now: number): void => {
     if (this.destroyed) return;
-    const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
+    const elapsed = Math.max(0, (now - this.lastFrame) / 1000);
+    const dt = Math.min(elapsed, 0.05);
     this.lastFrame = now;
     this.frame = now;
-    this.update(dt, now);
+    this.update(dt, now, elapsed);
     this.draw();
     requestAnimationFrame(this.loop);
   };
 
-  private update(dt: number, now: number): void {
+  private update(dt: number, now: number, elapsed = dt): void {
     let dx = 0;
     let dy = 0;
     if (this.pressed.has('arrowleft') || this.pressed.has('a')) dx -= 1;
@@ -661,10 +676,13 @@ export class CourtyardGame {
           this.local.activity = this.pendingActivity ?? 'idle';
         }
         this.pendingActivity = null;
+        if (this.local.activity === 'eat' || this.local.activity === 'toilet') this.local.direction = 'right';
         this.callbacks.onActivity(this.getSnapshot());
         if (arrival) arrival();
       } else {
-        const step = Math.min(SPEED * 0.82 * dt, distance);
+        // Auto walking follows elapsed time when a background tab throttles frames.
+        // Clamp to the remaining distance; manual movement still uses the small dt.
+        const step = Math.min(SPEED * 0.82 * elapsed, distance);
         this.moveLocal(tx / distance * step, ty / distance * step);
         this.local.direction = directionFromVector(tx, ty);
       }
@@ -701,20 +719,23 @@ export class CourtyardGame {
   private updateDuet(now: number): void {
     if (!this.duet) return;
     const partner = this.remotes.get(this.duet.partnerId);
-    if (!partner || now > this.duet.until) {
-      this.duet = null;
+    if (!partner || partner.scene !== this.scene || now > this.duet.until) {
+      this.endDuet();
+      this.local.activity = 'idle'; this.callbacks.onActivity(this.getSnapshot());
       return;
     }
     if (this.duet.kind === 'nuzzle') {
       const distance = Math.hypot(partner.x - this.local.x, partner.y - this.local.y);
-      if (this.duet.phase === 'approach' && (distance < 38 || !this.autoTarget)) {
+      if (this.duet.phase === 'approach' && distance < 55 && !this.autoTarget && partner.activity !== 'walk') {
         this.duet.phase = 'play';
         this.duet.until = now + 2400;
         this.autoTarget = null;
-        this.local.activity = 'idle';
+        this.local.activity = 'play';
+        this.local.nuzzleWith = partner.id;
         this.local.direction = partner.x < this.local.x ? 'left' : 'right';
         this.callbacks.onActivity(this.getSnapshot());
       } else if (this.duet.phase === 'play') {
+        if (partner.activity !== 'idle' && partner.activity !== 'play') { this.endDuet(); this.local.activity = 'idle'; this.callbacks.onActivity(this.getSnapshot()); return; }
         this.local.direction = partner.x < this.local.x ? 'left' : 'right';
         if (now - this.lastHeartAt > 150) {
           this.lastHeartAt = now;
@@ -839,17 +860,37 @@ export class CourtyardGame {
     cast.sort((a, b) => a.entity.y - b.entity.y);
 
     for (const member of cast) {
-      const entity = member.poke
+      let entity = member.poke
         ? { ...member.entity, activity: 'idle' as Activity, direction: 'down' as Direction }
         : member.entity;
-      drawCat(ctx, entity, this.frame, member.label, !member.ghost && member.entity.id === this.local.id, member.ghost);
+      // One accepted contact phase draws both poses, despite packet/render delay.
+      if (this.duet?.phase === 'play' && (entity.id === this.local.id || entity.id === this.duet.partnerId)) {
+        const otherId = entity.id === this.local.id ? this.duet.partnerId : this.local.id;
+        entity = { ...entity, activity: 'play', nuzzleWith: otherId, direction: entity.id < otherId ? 'right' : 'left' };
+      }
+      drawCat(ctx, entity, this.frame, member.ghost);
     }
 
+    // Foreground from the same background asset: actual tray lip, not a painted strip.
+    if (this.scene === 'yard' && cast.some(({entity}) => entity.activity === 'toilet')) {
+      ctx.drawImage(courtyardImage, 1195, 705, 179, 34, 747, 441, 112, 21);
+    }
     this.drawBlankets(ctx);
-    this.drawSceneSign(ctx);
-    for (const member of cast) this.drawOverhead(ctx, member.entity, member.label);
     this.drawParticles(ctx);
     this.applyDayNight(ctx);
+    this.drawSceneSign(ctx);
+    ctx.font = '12px monospace';
+    const labels: { left: number; right: number; y: number }[] = [];
+    for (const member of cast) {
+      const half = (ctx.measureText(member.label).width + 14) / 2;
+      const left = member.entity.x - half, right = member.entity.x + half;
+      let y = member.entity.y - 65;
+      // ponytail: O(n²) label packing for a small room; index spatially if rooms grow.
+      while (labels.some(label => left < label.right && right > label.left && Math.abs(y - label.y) < 18)) y -= 20;
+      drawLabel(ctx, member.entity.x, y, member.label, !member.ghost && member.entity.id === this.local.id);
+      labels.push({ left, right, y });
+      this.drawOverhead(ctx, member.entity, member.label);
+    }
   }
 
   // 花园场景：背景图 → 代码绘制的 6 个土坑（长在背景上、猫之下）
@@ -912,7 +953,7 @@ export class CourtyardGame {
         && remote.cosleepWith === this.local.id
         && this.local.activity === 'sleep'
         && remote.activity === 'sleep';
-      if (paired) drawBlanket(ctx, (this.local.x + remote.x) / 2, (this.local.y + remote.y) / 2);
+      if (paired && Math.hypot(this.local.x - remote.x, this.local.y - remote.y) < 70) drawBlanket(ctx, (this.local.x + remote.x) / 2, (this.local.y + remote.y) / 2);
     }
   }
 
@@ -1004,7 +1045,7 @@ export class CourtyardGame {
       if (note.flower) {
         ctx.save();
         ctx.translate(x + 10, y - 6);
-        drawFlowerHead(ctx, note.flower, 0.55, Math.sin(now / 300 + x), false);
+        drawFlowerHead(ctx, note.flower, 0.55, Math.sin(now / 900 + x) * 0.4, false);
         ctx.restore();
       }
     }
@@ -1078,6 +1119,7 @@ interface PlayerSnapshotLike {
   direction: Direction;
   appearance: Appearance;
   cosleepWith?: string | null;
+  nuzzleWith?: string | null;
   headFlower?: FlowerId | null;
 }
 
@@ -1294,27 +1336,11 @@ function drawWindowSky(ctx: CanvasRenderingContext2D, label: string, time: numbe
 
 // 双人被窝的被子：代码绘制的像素被，覆盖两只猫的下半身——1 张被子适配全部花色组合
 function drawBlanket(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
-  const x = Math.round(cx - 35);
-  const y = Math.round(cy - 6);
-  ctx.fillStyle = '#d98273';
-  ctx.fillRect(x, y + 5, 70, 19);
-  for (let i = 0; i < 8; i++) ctx.fillRect(x + 3 + i * 8, y + (i % 2 === 0 ? 1 : 3), 8, 6);
-  ctx.fillStyle = '#eaa48f';
-  ctx.fillRect(x, y + 5, 70, 4);
-  ctx.fillStyle = '#c96a5c';
-  ctx.fillRect(x + 10, y + 11, 4, 13);
-  ctx.fillRect(x + 33, y + 11, 4, 13);
-  ctx.fillRect(x + 56, y + 11, 4, 13);
-  ctx.fillStyle = '#b75a52';
-  drawPawPrint(ctx, x + 21, y + 16);
-  drawPawPrint(ctx, x + 45, y + 15);
-}
-
-function drawPawPrint(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-  ctx.fillRect(x, y, 4, 3);
-  ctx.fillRect(x - 2, y - 2, 2, 2);
-  ctx.fillRect(x + 1, y - 3, 2, 2);
-  ctx.fillRect(x + 4, y - 2, 2, 2);
+  const x = Math.round(cx - 58);
+  const y = Math.round(cy + 4);
+  ctx.save(); ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(cabinImage, 1090, 760, 170, 58, x, y, 116, 40);
+  ctx.restore();
 }
 
 function drawBed(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
@@ -1324,23 +1350,24 @@ function drawBed(ctx: CanvasRenderingContext2D, x: number, y: number, color: str
   ctx.fillStyle = '#c9a879'; ctx.fillRect(x - 30, y + 12, 60, 9);
 }
 
-function cosleepOffset(entity: PlayerSnapshotLike): number {
-  if (entity.activity !== 'sleep' || !entity.cosleepWith) return 0;
-  return entity.id < entity.cosleepWith ? -12 : 12;
-}
-
-function drawCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, label: string, own: boolean, ghost: boolean): void {
-  ctx.save();
-  if (ghost) ctx.globalAlpha = 0.85;
-  if (catAtlas.complete && catAtlas.naturalWidth > 0) {
-    drawAtlasCat(ctx, player, time, label, own);
-  } else {
-    drawProceduralCat(ctx, player, time, label, own);
-  }
+function drawCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, ghost: boolean): void {
+  ctx.save(); if (ghost) ctx.globalAlpha = .85;
+  if (drawCatSprite(ctx, player, time)) {
+    if (player.activity === 'play' && !player.nuzzleWith) {
+      const ballX = Math.round(player.x + Math.sin(time / 190) * 29);
+      ctx.fillStyle = '#7a3158'; ctx.fillRect(ballX - 6, Math.round(player.y) + 13, 12, 12);
+      ctx.fillStyle = '#e792a7'; ctx.fillRect(ballX - 2, Math.round(player.y) + 15, 4, 4);
+    }
+    if (player.activity === 'study') {
+      ctx.fillStyle='#6d432b'; ctx.fillRect(player.x + 9, player.y + 2, 34, 20);
+      ctx.fillStyle='#f0deb0'; ctx.fillRect(player.x + 12, player.y + 4, 27, 14);
+      ctx.fillStyle='#a96b58'; ctx.fillRect(player.x + 25, player.y + 4, 2, 14);
+    }
+  } else drawProceduralCat(ctx, player, time);
   ctx.restore();
 }
 
-function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, label: string, own: boolean): void {
+function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number): void {
   const { x, y, appearance, activity, direction } = player;
   const [base, light, dark] = appearance.colors;
   const moving = activity === 'walk';
@@ -1355,7 +1382,7 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
           : activity === 'sleep'
             ? Math.round(Math.sin(time / 900 + x) * 1.5)
             : Math.round(Math.sin(time / 650 + x));
-  const px = Math.round(x + cosleepOffset(player)); const py = Math.round(y + bob);
+  const px = Math.round(x); const py = Math.round(y + bob);
 
   ctx.fillStyle = 'rgba(40, 37, 30, .24)'; ctx.fillRect(px - 17, Math.round(y) + 13, 34, 7);
 
@@ -1371,7 +1398,7 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
       drawHeadFlower(ctx, player.headFlower, time);
       ctx.restore();
     }
-    drawLabel(ctx, x, py - 24, label, own); return;
+    return;
   }
 
   if (activity === 'play') {
@@ -1423,118 +1450,6 @@ function drawProceduralCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshot
     drawHeadFlower(ctx, player.headFlower, time);
     ctx.restore();
   }
-  drawLabel(ctx, x, py - 29, label, own);
-}
-
-function drawAtlasCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, label: string, own: boolean): void {
-  const { x, y, activity, direction, appearance } = player;
-  if (activity === 'toilet' && catSquat.complete && catSquat.naturalWidth > 0) {
-    drawSquattingCat(ctx, player, time, label, own);
-    return;
-  }
-  const moving = activity === 'walk';
-  const column = moving ? Math.floor(time / 145) % 4 : activity === 'sleep' ? 0 : activity === 'play' ? 1 + Math.floor(time / 420) % 2 : Math.floor(time / 700) % 2;
-  const row = activity === 'sleep' || activity === 'play'
-    ? 5
-    : direction === 'right'
-      ? 1
-      : direction === 'up'
-        ? 2
-        : direction === 'left'
-          ? 3
-          : moving
-            ? 0
-            : 4;
-  const sourceColumn = atlasColumns[column]!;
-  const sourceRow = atlasRows[row]!;
-  const proportions = breedProportions(appearance.breed);
-  const width = 67 * proportions.width;
-  const height = 76 * proportions.height;
-  const anchor = activity === 'sleep' || activity === 'play' ? .55 : .68;
-  const offsetX = cosleepOffset(player);
-  const breathe = moving
-    ? 0
-    : activity === 'sleep'
-      ? Math.round(Math.sin(time / 900 + x) * 1.5)
-      : activity === 'eat'
-        ? Math.round(Math.max(0, Math.sin(time / 170 + x)) * 3)
-        : Math.round(Math.sin(time / 650 + x));
-
-  ctx.save();
-  ctx.imageSmoothingEnabled = false;
-  ctx.filter = coatFilter(appearance.coat);
-  ctx.drawImage(
-    catAtlas,
-    sourceColumn.x,
-    sourceRow.y,
-    sourceColumn.width,
-    sourceRow.height,
-    Math.round(x - width / 2 + offsetX),
-    Math.round(y - height * anchor) + breathe,
-    width,
-    height,
-  );
-  ctx.restore();
-
-  // 别在头上的花：随头顶 breathe 起伏，左右方向时别在靠前侧耳后，朝上时藏在脑后不画
-  if (player.headFlower && direction !== 'up') {
-    const side = direction === 'left' ? -width * 0.18 : width * 0.18;
-    ctx.save();
-    ctx.translate(Math.round(x + offsetX + side), Math.round(y - height * anchor) + breathe + Math.round(height * 0.1));
-    drawHeadFlower(ctx, player.headFlower, time);
-    ctx.restore();
-  }
-
-  if (activity === 'play') {
-    const ballX = Math.round(x + Math.sin(time / 190) * 29);
-    ctx.fillStyle = '#7a3158'; ctx.fillRect(ballX - 6, Math.round(y) + 13, 12, 12);
-    ctx.fillStyle = '#e792a7'; ctx.fillRect(ballX - 2, Math.round(y) + 15, 4, 4);
-  }
-  if (activity === 'study') {
-    const pageY = Math.round(y) + 7;
-    ctx.fillStyle = '#6d432b'; ctx.fillRect(Math.round(x) + 9, pageY - 2, 34, 23);
-    ctx.fillStyle = '#f0deb0'; ctx.fillRect(Math.round(x) + 12, pageY, 14, 18); ctx.fillRect(Math.round(x) + 27, pageY, 13, 18);
-    ctx.fillStyle = '#a96b58'; ctx.fillRect(Math.round(x) + 26, pageY + 1, 2, 17);
-    ctx.fillStyle = '#826b55'; ctx.fillRect(Math.round(x) + 15, pageY + 5, 8, 2); ctx.fillRect(Math.round(x) + 30, pageY + 5, 7, 2);
-    const lift = time % 2400;
-    if (lift < 320) {
-      ctx.save();
-      ctx.translate(Math.round(x) + 26, pageY + 18);
-      ctx.rotate(-0.7 * Math.sin((lift / 320) * Math.PI));
-      ctx.fillStyle = '#f0deb0';
-      ctx.fillRect(0, -18, 13, 18);
-      ctx.restore();
-    }
-  }
-  drawLabel(ctx, x, Math.round(y - height * anchor - 9), label, own);
-}
-
-function drawSquattingCat(ctx: CanvasRenderingContext2D, player: PlayerSnapshotLike, time: number, label: string, own: boolean): void {
-  const proportions = breedProportions(player.appearance.breed);
-  const width = 72 * proportions.width;
-  const height = 64 * proportions.height;
-  // 刨砂节奏：身体小幅向后顿挫，配合脚边踢起的沙粒
-  const scratch = Math.max(0, Math.sin(time / 150 + player.x)) * 2;
-  ctx.save();
-  ctx.imageSmoothingEnabled = false;
-  ctx.filter = coatFilter(player.appearance.coat);
-  ctx.drawImage(
-    catSquat,
-    280,
-    395,
-    710,
-    610,
-    Math.round(player.x - width / 2 - scratch),
-    Math.round(player.y - height),
-    width,
-    height,
-  );
-  ctx.restore();
-
-  // Repaint the litter-box front rim over the paws to place the cat inside the tray.
-  ctx.fillStyle = '#94613b'; ctx.fillRect(765, 463, 83, 7);
-  ctx.fillStyle = '#c7884e'; ctx.fillRect(769, 463, 75, 3);
-  drawLabel(ctx, player.x, Math.round(player.y - height - 8), label, own);
 }
 
 function drawBubble(ctx: CanvasRenderingContext2D, cx: number, y: number, text: string, alpha: number): void {
@@ -1610,37 +1525,6 @@ function drawPixelHeart(ctx: CanvasRenderingContext2D, cx: number, cy: number, s
       if (row[rx] === '1') ctx.fillRect(Math.round(left + rx * scale), Math.round(top + ry * scale), scale, scale);
     }
   });
-}
-
-function coatFilter(coat: Appearance['coat']): string {
-  switch (coat) {
-    case '橘白': return 'sepia(.85) saturate(2.2) hue-rotate(335deg) brightness(1.08)';
-    case '奶牛': return 'grayscale(.9) contrast(1.35) brightness(.96)';
-    case '狸花': return 'sepia(.48) saturate(1.25) brightness(.86)';
-    case '三花': return 'sepia(.6) saturate(1.65) hue-rotate(345deg) contrast(1.08)';
-    case '银灰': return 'grayscale(.72) saturate(.5) brightness(1.04)';
-    case '奶油': return 'sepia(.65) saturate(1.1) brightness(1.2)';
-    case '玳瑁': return 'sepia(.82) saturate(2.25) hue-rotate(338deg) brightness(.68) contrast(1.25)';
-    case '重点色': return 'sepia(.38) saturate(.7) contrast(1.22) brightness(.96)';
-    case '金渐层': return 'sepia(.92) saturate(1.75) hue-rotate(348deg) brightness(1.08)';
-    case '纯黑': return 'grayscale(1) brightness(.38) contrast(1.35)';
-    case '蓝白': return 'grayscale(.55) sepia(.18) hue-rotate(155deg) saturate(.72) brightness(.92)';
-    case '阿比西尼亚': return 'sepia(.78) saturate(1.8) hue-rotate(334deg) brightness(.86)';
-  }
-}
-
-function breedProportions(breed: Appearance['breed']): { width: number; height: number } {
-  switch (breed) {
-    case '英短': return { width: 1.12, height: .96 };
-    case '暹罗': return { width: .93, height: 1.07 };
-    case '长毛猫': return { width: 1.12, height: 1.1 };
-    case '缅因猫': return { width: 1.2, height: 1.13 };
-    case '布偶猫': return { width: 1.15, height: 1.08 };
-    case '孟加拉豹猫': return { width: 1.12, height: .98 };
-    case '德文卷毛猫': return { width: .91, height: 1.06 };
-    case '挪威森林猫': return { width: 1.17, height: 1.12 };
-    default: return { width: 1, height: 1 };
-  }
 }
 
 function drawLabel(ctx: CanvasRenderingContext2D, x: number, y: number, label: string, own: boolean): void {

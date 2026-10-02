@@ -1,7 +1,7 @@
 // 小花园：星露谷式共同种植。
 // 规则定稿（2026-09-30）：
 // - 双方都浇才长一阶（wateredBy 集齐两个不同玩家，且距上一阶 >= STAGE_GAP_MS）；
-// - 每人每阶段只能浇一次；单人浇只保鲜；
+// - 每人的生长贡献只计一次；重复浇水仍可保鲜；阶段推进由数据库读取/操作处理；
 // - 72h 未浇水 → 渲染低头耷拉（读时推导，不写库），浇水即恢复，永不枯死。
 import { FLOWER_STAGES } from './types';
 import type { FlowerId, GardenPlot } from './types';
@@ -35,28 +35,6 @@ export function isWilted(plot: GardenPlot, now = Date.now()): boolean {
 
 export function hasWatered(plot: GardenPlot, playerId: string): boolean {
   return plot.wateredBy.includes(playerId);
-}
-
-// 浇水后的新状态（纯函数，落库前计算）：
-// advanced=true 表示双方都浇且满足时间间隔，阶段 +1 并重置浇水记录。
-export function applyWater(plot: GardenPlot, playerId: string, now = Date.now()): { next: GardenPlot; advanced: boolean; revived: boolean } {
-  const revived = isWilted(plot, now);
-  const iso = new Date(now).toISOString();
-  const wateredBy = plot.wateredBy.includes(playerId) ? plot.wateredBy : [...plot.wateredBy, playerId];
-  const gapOk = !plot.stageAt || now - new Date(plot.stageAt).getTime() >= STAGE_GAP_MS;
-  const advanced = wateredBy.length >= 2 && gapOk && plot.stage < FLOWER_STAGES - 1;
-  return {
-    next: {
-      ...plot,
-      stage: advanced ? plot.stage + 1 : plot.stage,
-      stageAt: advanced ? iso : plot.stageAt,
-      wateredBy: advanced ? [] : wateredBy,
-      lastWateredAt: iso,
-      lastWateredBy: playerId,
-    },
-    advanced,
-    revived,
-  };
 }
 
 const STEM = '#4d7a3a';
@@ -122,7 +100,8 @@ export function drawPlot(ctx: CanvasRenderingContext2D, plot: GardenPlot, spot: 
 
   const wilted = isWilted(plot, now);
   const stem = wilted ? WILT_STEM : STEM;
-  const sway = Math.sin(frame / 26 + plot.plot * 1.7) * (plot.stage >= 3 ? 1 : 0.4);
+  // frame 是毫秒；约 5.7 秒一轮，茎与花头共用相位。
+  const sway = Math.sin(frame / 900 + plot.plot * 1.7) * (plot.stage >= 3 ? 1 : 0.4);
   const bend = wilted ? 5 : 0;
   const stage = plot.stage;
 
@@ -134,7 +113,7 @@ export function drawPlot(ctx: CanvasRenderingContext2D, plot: GardenPlot, spot: 
   }
   // 茎高随阶段
   const stemH = [0, 8, 15, 22, 26][stage] ?? 26;
-  const baseY = -8;
+  const baseY = y - 8;
   ctx.fillStyle = stem;
   for (let i = 0; i < stemH; i += 2) {
     const t = i / stemH;
@@ -159,7 +138,7 @@ export function drawPlot(ctx: CanvasRenderingContext2D, plot: GardenPlot, spot: 
   if (stage >= 4) {
     ctx.save();
     ctx.translate(topX + 1, topY - 4);
-    drawFlowerHead(ctx, plot.flower, 1, Math.sin(frame / 34 + plot.plot), wilted);
+    drawFlowerHead(ctx, plot.flower, 1, sway * 0.6, wilted);
     ctx.restore();
   }
 }
@@ -170,12 +149,12 @@ export function drawHeadFlower(ctx: CanvasRenderingContext2D, flower: FlowerId, 
   ctx.fillRect(-1, 2, 2, 5);
   ctx.fillStyle = LEAF;
   ctx.fillRect(1, 5, 4, 2);
-  drawFlowerHead(ctx, flower, 0.62, Math.sin(frame / 22) * 0.8, false);
+  drawFlowerHead(ctx, flower, 0.62, Math.sin(frame / 900) * 0.4, false);
 }
 
 // 装饰花（种在门口/场景里）：带土坨与整茎
 export function drawDecorFlower(ctx: CanvasRenderingContext2D, flower: FlowerId, x: number, y: number, frame: number): void {
-  const sway = Math.sin(frame / 30 + x * 0.05);
+  const sway = Math.sin(frame / 900 + x * 0.05);
   ctx.fillStyle = SOIL_DARK;
   ctx.fillRect(x - 6, y - 3, 13, 6);
   ctx.fillStyle = SOIL;

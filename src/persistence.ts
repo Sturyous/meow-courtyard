@@ -1,5 +1,5 @@
 import { getSupabase, supabaseConfig, ROOM_ID } from './supabase';
-import type { Appearance, DecorItem, FlowerId, GardenPlot, Identity, NoteData, NoteKind, PlayerSnapshot, SceneId } from './types';
+import type { Appearance, DecorItem, FlowerId, GardenPlot, Identity, NoteData, NoteKind, PlayerSnapshot } from './types';
 
 export interface GhostData {
   id: string;
@@ -153,23 +153,6 @@ export async function fetchOpenNotes(): Promise<NoteData[]> {
   return (data ?? []).map((row) => toNote(row as NoteRow));
 }
 
-export async function insertNote(identity: Identity, kind: NoteKind, text: string, x: number, y: number, scene: SceneId, flower: FlowerId | null = null): Promise<NoteData | null> {
-  const db = getSupabase();
-  if (!db) return null;
-  const { data } = await db
-    .from('notes')
-    .insert({ room: ROOM_ID, author_id: identity.id, author_name: identity.name, kind, text, anchor_x: Math.round(x), anchor_y: Math.round(y), scene, flower })
-    .select()
-    .single();
-  return data ? toNote(data as NoteRow) : null;
-}
-
-export async function markNoteOpened(noteId: string): Promise<void> {
-  const db = getSupabase();
-  if (!db) return;
-  await db.from('notes').update({ opened_at: new Date().toISOString() }).eq('id', noteId);
-}
-
 export async function fetchRecap(myId: string): Promise<Recap | null> {
   const db = getSupabase();
   if (!db) return null;
@@ -255,24 +238,9 @@ function toPlot(row: PlotRow): GardenPlot {
 export async function fetchGarden(): Promise<GardenPlot[]> {
   const db = getSupabase();
   if (!db) return [];
-  const { data } = await db.from('garden_plots').select('*').eq('room', ROOM_ID).order('plot');
-  return (data ?? []).map((row) => toPlot(row as PlotRow));
-}
-
-export async function upsertPlot(plot: GardenPlot): Promise<void> {
-  const db = getSupabase();
-  if (!db) return;
-  await db.from('garden_plots').upsert({
-    room: ROOM_ID,
-    plot: plot.plot,
-    flower: plot.flower,
-    stage: plot.stage,
-    planted_by: plot.plantedBy,
-    stage_at: plot.stageAt,
-    watered_by: plot.wateredBy,
-    last_watered_at: plot.lastWateredAt,
-    last_watered_by: plot.lastWateredBy,
-  });
+  const { data, error } = await db.rpc('read_garden', { p_room: ROOM_ID });
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((row: PlotRow) => toPlot(row));
 }
 
 interface DecorRow {
@@ -302,36 +270,29 @@ export async function fetchDecor(): Promise<DecorItem[]> {
   return (data ?? []).map((row) => toDecor(row as DecorRow));
 }
 
-export async function insertDecor(flower: FlowerId, scene: SceneId, x: number, y: number, placedBy: string): Promise<DecorItem | null> {
-  const db = getSupabase();
-  if (!db) return null;
-  const { data } = await db
-    .from('decor')
-    .insert({ room: ROOM_ID, flower, scene, x: Math.round(x), y: Math.round(y), placed_by: placedBy })
-    .select()
-    .single();
-  return data ? toDecor(data as DecorRow) : null;
-}
-
-export async function deleteDecor(id: string): Promise<void> {
-  const db = getSupabase();
-  if (!db) return;
-  await db.from('decor').delete().eq('room', ROOM_ID).eq('id', id);
-}
-
 // ---- 花袋（players.flowers jsonb，形如 {"sunflower": 2}）----
 
 export type FlowerBag = Partial<Record<FlowerId, number>>;
 
-export async function fetchFlowerBag(myId: string): Promise<FlowerBag> {
+export async function fetchOwnState(myId: string): Promise<{ flowers: FlowerBag; headFlower: FlowerId | null }> {
   const db = getSupabase();
-  if (!db) return {};
-  const { data } = await db.from('players').select('flowers').eq('room', ROOM_ID).eq('id', myId).maybeSingle();
-  return ((data?.flowers as FlowerBag | null) ?? {}) as FlowerBag;
+  if (!db) return { flowers: {}, headFlower: null };
+  const { data, error } = await db.from('players').select('flowers, head_flower').eq('room', ROOM_ID).eq('id', myId).maybeSingle();
+  if (error) throw new Error(error.message);
+  return { flowers: data?.flowers ?? {}, headFlower: data?.head_flower ?? null };
 }
 
-export async function writeFlowerBag(myId: string, bag: FlowerBag): Promise<void> {
+export async function flowerAction(myId: string, action: 'equip' | 'place-decor' | 'recover-decor' | 'place-note' | 'open-note' | 'plant' | 'water' | 'harvest', args: Record<string, unknown>, requestId: string = crypto.randomUUID()): Promise<{ flowers: FlowerBag; headFlower: FlowerId | null; note?: NoteData; decor?: DecorItem; plot?: GardenPlot }> {
   const db = getSupabase();
-  if (!db) return;
-  await db.from('players').update({ flowers: bag }).eq('room', ROOM_ID).eq('id', myId);
+  if (!db) throw new Error('离线时无法保存物品，请先连接庭院');
+  const { data, error } = await db.rpc('flower_action', { p_room: ROOM_ID, p_player: myId, p_request: requestId, p_action: action, p_args: args }).abortSignal(AbortSignal.timeout(15_000));
+  if (error) {
+    const message = error.message.includes('ALREADY_CLAIMED') ? '已经被领取了，请刷新花袋'
+      : error.message.includes('NO_FLOWER') ? '这朵花已经用掉了，请刷新花袋'
+      : error.message.includes('PLOT_OCCUPIED') ? '这个坑已经种上了'
+      : error.message.includes('NOT_READY') ? '花还没开好，或已经收获了'
+      : '连接未确认保存，请重试';
+    throw new Error(message);
+  }
+  return { ...data, note: data.note ? toNote(data.note) : undefined, decor: data.decor ? toDecor(data.decor) : undefined, plot: data.plot ? toPlot(data.plot) : undefined };
 }

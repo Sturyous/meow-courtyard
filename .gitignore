@@ -1,4 +1,5 @@
 node_modules/
+.qa-npm-cache/
 dist/
 .vercel/
 .env.local
